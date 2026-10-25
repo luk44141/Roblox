@@ -1,0 +1,180 @@
+CONTEXTO DEL PROYECTO ROBLOX
+Repositorio: https://github.com/luk44141/Roblox
+Carpeta principal analizada: Game/
+Rama consultada: main
+Lenguaje: Luau (Roblox Studio)
+
+OBJETIVO DE ESTE ARCHIVO
+Este documento sirve como contexto inicial para analizar, mantener y mejorar el proyecto. No reemplaza la lectura del código actual. Antes de cambiar cualquier sistema, revisá los archivos relevantes del repositorio y sus dependencias. El estado del código puede cambiar; comprobá siempre la versión más reciente de la rama.
+
+1. DESCRIPCIÓN GENERAL
+
+El proyecto contiene sistemas de cámara, movimiento y combate para un juego de Roblox. La arquitectura separa parte de la lógica autoritativa del servidor (combate, validaciones, daño, dash) de la entrada del cliente y los efectos visuales. La estructura parece modular y no conviene reescribirla completa sin una razón técnica demostrable.
+
+Repositorio:
+https://github.com/luk44141/Roblox/tree/main/Game
+
+2. ESTRUCTURA CONOCIDA
+
+Game/
+├── ReplicatedStorage/
+│   └── CombatSystem/
+│       ├── CombatConfig
+│       ├── DashConfig
+│       └── SignalSet
+│		└── Remotes
+│       	├── CombatFeedBack
+│       	└── CombatRequest
+├── ServerScriptService/
+│   └── CombatSystem/
+│       ├── CombatService
+│       ├── CombatSetup.legacy
+│       ├── DodgeService
+│       └── HitboxService
+└── StarterPlayerScripts/
+    ├── Client/
+    │   ├── CameraController y configuración relacionada
+    │   ├── CharacterOrientation
+    │   ├── CursorController
+    │   ├── DashController
+    │   ├── MovementConfig
+    │   └── SprintController y configuración relacionada
+    └── CombatClient/
+        ├── CombatIndicators
+        ├── HitFeedback
+        ├── LockOn
+        ├── MovementController
+        └── init.local
+
+La lista anterior resume los archivos y módulos identificados durante una revisión del repositorio. Verificá los nombres exactos y el contenido en GitHub antes de editar. No inventes módulos, rutas ni objetos que no existan.
+
+3. SISTEMA DE COMBATE
+
+CombatService.luau:
+- Mantiene estados de combate por personaje.
+- Gestiona el combo M1 de cinco golpes, ataque pesado, bloqueo, parry, stun, ventanas de recuperación y solicitudes del cliente.
+- Utiliza HitboxService para consultar hitboxes y DodgeService para resolver la interacción con el dash.
+- Usa atributos del personaje para comunicar fases de movimiento y estados.
+- Recibe acciones por un RemoteEvent. Entre las acciones identificadas están M1, Heavy, BlockStart, BlockEnd y Dash.
+- Valida desde el servidor si las acciones pueden ejecutarse.
+
+HitboxService.luau:
+- Centraliza operaciones de hitboxes/hurtboxes, consulta de objetivos y visualización de depuración.
+- Revisar su implementación actual antes de cambiar dimensiones, filtros o frecuencia de consulta.
+
+CombatConfig.luau:
+- Centraliza valores de ataques, combo, bloqueo, stun, movimiento, feedback y depuración.
+- Los ataques M1 usan anticipación (Windup), ventana activa (Active) y recuperación (Recovery).
+- La secuencia M1 identificada es M1_1, M1_2, M1_3, M1_4 y M1_5.
+- El ataque pesado se llama Heavy.
+- En la versión revisada, los IDs de animación de M1, Heavy y Stun estaban vacíos. Verificá si siguen así antes de asumir que las animaciones están pendientes.
+
+DodgeService.luau:
+- Gestiona las solicitudes de dash, cargas, cooldown, fases, invulnerabilidad, Perfect Dodge, cancelación y validación de desplazamiento.
+- El cliente solicita el dash; el servidor decide si está permitido y controla la lógica de invulnerabilidad.
+- El desplazamiento físico depende del cliente y el servidor lo audita, por lo que hay que probar latencia, colisiones, cancelaciones y posibles discrepancias de posición.
+
+4. SISTEMA DE MOVIMIENTO Y CÁMARA
+
+CameraController:
+- Gestiona seguimiento del personaje, zoom, colisión de cámara con el entorno, inclinación, efectos de movimiento y FOV dinámico.
+- Incluye integración con sprint, dash y Shift Lock.
+- La intención es que haya un controlador principal responsable de actualizar la cámara. Evitá crear un segundo controlador que compita por CurrentCamera.
+
+CharacterOrientation:
+- Controla la orientación del personaje. Revisar su interacción con el movimiento, el bloqueo de objetivo y Shift Lock.
+
+CursorController:
+- Controla el comportamiento del cursor. Verificar que no interfiera con los controles nativos de Roblox.
+
+DashController:
+- Recibe la entrada de dash y gestiona la parte del cliente, incluida la dirección y el movimiento. Debe seguir las reglas y respuestas que valida el servidor.
+
+SprintController:
+- Gestiona el sprint. Comprobar que no compita con las restricciones de movimiento durante ataque, dash o stun.
+
+MovementController:
+- Aplica restricciones de movilidad asociadas a las fases de combate y a los atributos del personaje.
+- Es importante comprobar la prioridad entre movimiento normal, sprint, dash, ataque y stun.
+
+LockOn:
+- Gestiona el bloqueo de objetivo. Probar su compatibilidad con cámara, orientación y combate.
+
+CombatIndicators y HitFeedback:
+- Muestran indicadores visuales/de timing y respuestas visuales a impactos. Los efectos del cliente no deben decidir daño ni resultados autoritativos.
+
+5. HALLAZGO CONCRETO QUE DEBE VERIFICARSE
+
+En CombatService.luau, dentro de resolveHit, la versión revisada tenía este patrón:
+
+    local dealt = 0
+    if damage > 0 then
+        dealt = math.min(damage, targetState.humanoid.Health)
+        targetState.humanoid:TakeDamage(damage)
+    end
+
+Se calcula dealt, pero se aplica damage. Esto puede hacer que el daño registrado en atributos/feedback no coincida con la cantidad de daño solicitada al Humanoid, especialmente en golpes letales. Revisar el código actual y, si sigue presente, corregirlo para que el daño aplicado y el registrado sean coherentes. Una posible corrección es llamar TakeDamage(dealt), siempre comprobando que el cálculo se corresponda con las reglas de daño deseadas.
+
+6. DEPURACIÓN
+
+En la versión revisada de CombatConfig.luau:
+- Debug.Enabled estaba en true.
+- Debug.PrintResults estaba en true.
+
+Revisar estos valores. Durante el desarrollo pueden servir para depurar hitboxes y resultados, pero deben ser fáciles de desactivar para las pruebas normales y la versión final. No elimines herramientas útiles de depuración sin necesidad.
+
+7. PRIORIDADES RECOMENDADAS
+
+Prioridad alta:
+1. Verificar y corregir el posible desajuste entre daño calculado, daño aplicado y daño mostrado.
+2. Probar las reglas del dash en el servidor y los límites de desplazamiento.
+3. Verificar que los estados de combate no se queden atascados al morir, reaparecer, cancelar ataques o recibir stun.
+4. Comprobar que los controladores de movimiento no se sobrescriban entre sí.
+
+Prioridad media:
+5. Revisar la inicialización y el registro de personajes para evitar sistemas duplicados.
+6. Probar la cámara con colisiones, sprint, dash, Shift Lock, bloqueo de objetivo y respawn.
+7. Completar y sincronizar las animaciones con los tiempos de ataque y las hitboxes.
+8. Comprobar que los indicadores y efectos visuales se limpien cuando una acción se cancela.
+
+Prioridad final:
+9. Ajustar valores de balance y dificultad después de confirmar que las mecánicas funcionan correctamente.
+10. Optimizar consultas, conexiones y efectos solo cuando exista evidencia de un problema de rendimiento.
+
+8. REGLAS PARA MODIFICAR EL PROYECTO
+
+- Antes de editar, leer el archivo completo y revisar sus dependencias y los scripts que lo llaman.
+- No reescribir el proyecto entero ni cambiar la arquitectura porque sí.
+- No crear scripts duplicados que controlen la misma cámara, movimiento, entrada o estado.
+- Mantener la lógica de daño, hitboxes, validación de acciones e invulnerabilidad bajo autoridad del servidor.
+- Tratar los datos del cliente como solicitudes no confiables. Validar tipos, estado, cooldown y personaje en el servidor.
+- No romper nombres de RemoteEvents, atributos, módulos, funciones públicas ni rutas que otros scripts ya utilicen.
+- Cuando cambies un contrato entre cliente y servidor, actualizar todos los consumidores relacionados.
+- No cambiar muchas cosas a la vez sin explicar el motivo. Priorizar correcciones pequeñas, verificables y reversibles.
+- No inventar nombres de objetos de Roblox Studio. Confirmar que existan o explicar claramente qué objeto hay que crear y dónde.
+- Si falta contexto o un archivo no está disponible, pedirlo o buscarlo en el repositorio antes de inventar una solución.
+- Si proponés una corrección, explicar el problema, el archivo afectado, la solución y cómo probarla.
+- Si el usuario pide el código completo de un archivo, entregar el archivo completo y no solo fragmentos, preservando la lógica no relacionada con el cambio.
+- No afirmar que el código fue probado en Roblox Studio si solo se hizo una revisión estática.
+- Al finalizar, enumerar los archivos modificados, los cambios y las pruebas pendientes.
+
+9. PRUEBAS MANUALES MÍNIMAS
+
+- Combo M1 completo y reinicio del combo.
+- Ataque pesado contra objetivo normal y objetivo que bloquea.
+- Parry exitoso, stun del atacante y recuperación del stun.
+- Dash normal, Perfect Dodge, cooldown/cargas y dash rechazado durante ataque, bloqueo o stun.
+- Dash contra paredes y objetos, con latencia y con cancelación por muerte o stun.
+- Dos personajes atacándose simultáneamente.
+- Muerte y respawn durante ataque, bloqueo, dash y stun.
+- Sprint y movimiento durante todas las fases del combate.
+- Cámara al cambiar de objetivo, acercarse a paredes, activar Shift Lock, hacer dash y reaparecer.
+- Desactivar depuración y verificar que la partida sigue funcionando sin hitboxes visuales ni spam de logs.
+
+10. LIMITACIONES DE ESTA REVISIÓN
+
+Este documento se basa en una revisión estática parcial de archivos del repositorio en la rama main. No es una auditoría exhaustiva de todos los scripts ni confirma el comportamiento en ejecución. Antes de realizar cambios, Claude debe volver a inspeccionar la versión actual del repositorio, verificar los archivos y confirmar si los hallazgos siguen vigentes.
+
+PRIMERA TAREA RECOMENDADA PARA CLAUDE
+
+Inspeccioná todo el contenido actual de Game/ y elaborá una auditoría técnica priorizada, sin modificar archivos todavía. Para cada problema, indicá archivo y función afectados, evidencia concreta, impacto, nivel de prioridad y propuesta de corrección. Separá errores confirmados de riesgos que necesitan pruebas en Roblox Studio. Después, proponé un plan de cambios incremental que preserve los sistemas que ya funcionan.
