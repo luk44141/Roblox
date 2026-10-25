@@ -30,7 +30,7 @@ local function buildText(styleKey: string, result: string, amount: number, style
 	elseif result == "Dodged" then
 		return "DODGE"
 	elseif result == "PerfectDodge" then
-		return "PERFECT DODGE"
+		return "PERFECT DODGE!"
 	elseif result == "Blocked" then
 		return if amount > 0 then "BLOCK -" .. formatAmount(amount) else "BLOCK"
 	elseif result == "GuardBroken" then
@@ -192,6 +192,9 @@ function HitFeedback.OnDamage(payload)
 
 	if result == "Hit" or result == "GuardBroken" then
 		spawnImpact(target, variant)
+	elseif result == "Dodged" or result == "PerfectDodge" then
+		-- [v2] Destello propio: el Perfect Dodge se distingue de un dodge normal también por el efecto, no solo por el texto.
+		spawnImpact(target, result)
 	end
 end
 

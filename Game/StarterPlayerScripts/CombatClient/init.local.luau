@@ -3,7 +3,7 @@
 -- ÚNICO punto de arranque del cliente (reemplaza a ClientBootstrap) y ÚNICO que escucha CharacterAdded/Removing.
 -- Entrada del jugador y enrutado de eventos del servidor. No decide daño ni impactos.
 --
--- Módulos hijos (combate):       MovementController, LockOn, HitFeedback, CombatIndicators
+-- Módulos hijos (combate):       MovementController, LockOn, HitFeedback, CombatIndicators, CooldownHUD [v2]
 -- Módulos en StarterPlayerScripts > Client:  CameraController, SprintController, CursorController,
 --                                CharacterOrientation, DashController
 --
@@ -33,6 +33,8 @@ local MovementController = require(script:WaitForChild("MovementController"))
 local LockOn = require(script:WaitForChild("LockOn"))
 local HitFeedback = require(script:WaitForChild("HitFeedback"))
 local CombatIndicators = require(script:WaitForChild("CombatIndicators"))
+local CooldownHUD = require(script:WaitForChild("CooldownHUD")) -- [v2]
+local DashConfig = require(combatFolder:WaitForChild("DashConfig")) -- [v2] solo para el nombre de la tecla del dash en el HUD
 
 local Client = script.Parent:WaitForChild("Client")
 local CameraController = require(Client:WaitForChild("CameraController"))
@@ -59,7 +61,11 @@ local function canAct(): boolean
 	return CursorController.IsGameMode() and not GuiService.MenuIsOpen
 end
 
--- Fase efectiva de movimiento: el stun del servidor manda; luego la fase del dash local; luego la del combate.
+-- Fase efectiva de movimiento. Prioridad: stun del servidor > fase del dash local > ataque (servidor) > Parry > Block.
+-- [v2] Block / Parry salen del atributo CombatDefense que publica CombatService (refleja lo que el SERVIDOR considera
+-- bloqueo o parry activo: se ignora F mantenida si el servidor la rechazó, p. ej. durante un ataque o guard break).
+-- Al soltar F o terminar la ventana de parry el atributo vuelve a "None" y MovementController deja de limitar:
+-- la velocidad (caminar / sprint) la sigue decidiendo solo SprintController.
 local function getCombatPhase(): string
 	local character = player.Character
 	if not character then
@@ -69,7 +75,21 @@ local function getCombatPhase(): string
 	if serverPhase == "Stunned" then
 		return serverPhase
 	end
-	return DashController.GetMovePhase() or serverPhase
+
+	local dashPhase = DashController.GetMovePhase()
+	if dashPhase then
+		return dashPhase
+	end
+
+	if serverPhase == "None" then
+		local defense = character:GetAttribute("CombatDefense")
+		if defense == "Parry" then
+			return "Parry"
+		elseif defense == "Blocking" then
+			return "Block"
+		end
+	end
+	return serverPhase
 end
 
 -- Reglas locales para el dash (el servidor las vuelve a validar con CombatService).
@@ -124,6 +144,13 @@ DashController.Start({
 
 MovementController.Start({ getPhase = getCombatPhase })
 
+-- [v2] HUD de cooldowns: lee el estado real publicado por el servidor (atributos del Player). Para el dash también usa
+-- la predicción local (DashController) y muestra el valor más restrictivo: lo que de verdad te dejaría hacer el cliente.
+CooldownHUD.Start({
+	keys = { Dash = DashConfig.Key, Heavy = KEY_HEAVY, Parry = KEY_BLOCK },
+	getDashCooldownRemaining = DashController.GetCooldownRemaining,
+})
+
 -- Solo valida el objetivo (ya no escribe la cámara). Antes del paso de cámara (Camera + 1).
 RunService:BindToRenderStep("CombatLockOnValidate", Enum.RenderPriority.Camera.Value - 1, LockOn.Step)
 
@@ -165,6 +192,7 @@ table.insert(
 			end
 		elseif input.KeyCode == KEY_HEAVY then
 			if not DashController.IsBusy() then
+				CooldownHUD.NotifyPress("Heavy") -- [v2] solo feedback visual si está en cooldown; el servidor decide siempre
 				requestRemote:FireServer("Heavy")
 			end
 		elseif input.KeyCode == KEY_BLOCK and not isBlockHeld then
@@ -276,6 +304,7 @@ script.Destroying:Connect(function()
 	RunService:UnbindFromRenderStep("CombatLockOnValidate")
 	clearCharacter()
 	MovementController.Stop()
+	CooldownHUD.Destroy()
 	DashController.Destroy()
 	CharacterOrientation.Destroy()
 	CameraController.Destroy()

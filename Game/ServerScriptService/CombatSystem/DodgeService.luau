@@ -20,6 +20,8 @@
 		DashCancelled(player, reason)   DashRejected(player, reason)       DashViolation(player, data)
 
 	Atributos en el personaje: "Invulnerable" (bool) y "DashPhase" (string).
+	[v2] Atributos en el JUGADOR (los lee el HUD de cooldowns): "DashCharges" (cargas disponibles) y
+	"CooldownEnd_Dash" (tiempo del servidor, Workspace:GetServerTimeNow, en que vuelve la próxima carga; 0 = cargas llenas).
 ]]
 
 local Players = game:GetService("Players")
@@ -106,6 +108,16 @@ local function setAttributes(state)
 		character:SetAttribute("Invulnerable", state.invulnerable)
 		character:SetAttribute("DashPhase", state.phase)
 	end
+end
+
+-- [v2] Publica el estado REAL de las cargas del dash para el HUD. Se llama al aceptar un dash y al (re)crear el personaje.
+local function publishCooldown(player, state)
+	local nextCharge = 0
+	if state.charges < cfg.MaxCharges then
+		nextCharge = workspace:GetServerTimeNow() + math.max(state.rechargeAt - os.clock(), 0)
+	end
+	player:SetAttribute("DashCharges", state.charges)
+	player:SetAttribute("CooldownEnd_Dash", nextCharge)
 end
 
 local function makeInfo(state)
@@ -314,6 +326,7 @@ function DodgeService.RequestDash(player, dashId)
 	state.invulnEnd = math.min(now + cfg.InvulnerabilityDuration + srv.InvulnerabilityPadding, state.activeEnd)
 	activeSet[player] = true
 	setAttributes(state)
+	publishCooldown(player, state) -- [v2]
 
 	env.onDashStarted(state.character)
 
@@ -443,6 +456,7 @@ local function bindCharacter(player, character)
 	state.startPosition = nil
 	activeSet[player] = nil
 	setAttributes(state)
+	publishCooldown(player, state) -- [v2] personaje nuevo = cargas llenas
 
 	characterConnections[player] = {
 		humanoid.Died:Connect(function()

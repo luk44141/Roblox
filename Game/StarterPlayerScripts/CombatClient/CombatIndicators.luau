@@ -3,12 +3,16 @@
 -- Indicador de timing de los ataques de los dummies y señal visual de stun.
 -- Todo se calcula con tiempos del servidor (Workspace:GetServerTimeNow): no hay cuentas regresivas propias.
 -- Es solo una ayuda de entrenamiento; el resultado real del parry lo decide el servidor.
+-- [v2] PerfectDodgeDummy: el telegraph (payload.TrainDodge) dibuja además la zona de Dodge normal y la de Perfect Dodge,
+-- derivadas de DashConfig (InvulnerabilityDuration, InvulnerabilityPadding, PerfectDodgeWindow). El resultado real
+-- (Hit / Dodged / PerfectDodge) lo decide el servidor en DodgeService y lo muestra HitFeedback.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local CombatConfig = require(ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("CombatConfig"))
+local DashConfig = require(ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("DashConfig"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -92,8 +96,19 @@ function CombatIndicators.OnTelegraph(payload)
 
 	destroyTelegraph(attacker)
 
-	local style = if payload.BreaksGuard then telegraphCfg.Styles.GuardBreak else telegraphCfg.Styles.Normal
+	local trainDodge = payload.TrainDodge == true
+	local style = if trainDodge
+		then telegraphCfg.Styles.Dodge
+		elseif payload.BreaksGuard then telegraphCfg.Styles.GuardBreak
+		else telegraphCfg.Styles.Normal
 	local windup = math.max(impactTime - startTime, 0.05)
+
+	-- [v2] Duración real de la invulnerabilidad del dash en el servidor y ventana de Perfect Dodge (ambas desde el INICIO del dash).
+	local perfectWindow = DashConfig.PerfectDodgeWindow
+	local dodgeWindow = math.min(
+		DashConfig.InvulnerabilityDuration + DashConfig.Server.InvulnerabilityPadding,
+		DashConfig.Duration
+	)
 
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "CombatTelegraph"
@@ -133,6 +148,22 @@ function CombatIndicators.OnTelegraph(payload)
 		zone.Size = UDim2.fromScale(math.max(zoneEnd - zoneStart, 0.02), 1)
 	end
 
+	-- [v2] Zonas del dash. La barra termina en el impacto: la franja de Perfect Dodge son los últimos PerfectDodgeWindow
+	-- segundos y la de Dodge normal el tramo anterior, hasta que acaba la invulnerabilidad. Se adelantan DodgeCueLead
+	-- (la pulsación de Q tarda en llegar al servidor).
+	if trainDodge then
+		local lead = telegraphCfg.DodgeCueLead
+		local dodgeStart = 1 - math.min(1, (dodgeWindow + lead) / windup)
+		local perfectStart = 1 - math.min(1, (perfectWindow + lead) / windup)
+		local perfectEnd = 1 - math.min(1, lead / windup)
+
+		local dodgeZone = makeBar(barBack, UDim2.fromScale(dodgeStart, 0), telegraphCfg.Styles.DodgeZone.Color, 0.4, 2)
+		dodgeZone.Size = UDim2.fromScale(math.max(perfectStart - dodgeStart, 0.02), 1)
+
+		local perfectZone = makeBar(barBack, UDim2.fromScale(perfectStart, 0), telegraphCfg.Styles.PerfectZone.Color, 0.1, 3)
+		perfectZone.Size = UDim2.fromScale(math.max(perfectEnd - perfectStart, 0.02), 1)
+	end
+
 	local cue = makeText(gui, UDim2.new(1, 0, 0, 22), UDim2.fromOffset(0, 40), 18, CombatConfig.Colors.SpecialZone)
 
 	gui.Parent = playerGui
@@ -147,6 +178,9 @@ function CombatIndicators.OnTelegraph(payload)
 		impactTime = impactTime,
 		canBeParried = payload.CanBeParried == true,
 		color = style.Color,
+		trainDodge = trainDodge,
+		perfectWindow = perfectWindow,
+		dodgeWindow = dodgeWindow,
 	}
 end
 
@@ -178,6 +212,23 @@ local function updateTelegraph(attacker: Model, telegraph, now: number)
 	end
 
 	telegraph.title.Text = string.format("%s  %.2f", telegraph.label, remaining)
+
+	-- [v2] Dummy de Perfect Dodge: indica con texto y color en qué zona estaría una pulsación de Q en este instante.
+	if telegraph.trainDodge then
+		local lead = telegraphCfg.DodgeCueLead
+		local perfectLimit = telegraph.perfectWindow + lead
+		local dodgeLimit = telegraph.dodgeWindow + lead
+		if remaining <= perfectLimit and remaining >= lead then
+			telegraph.cue.Text = "PERFECT"
+			telegraph.cue.TextColor3 = telegraphCfg.Styles.PerfectZone.Color
+		elseif remaining <= dodgeLimit and remaining > perfectLimit then
+			telegraph.cue.Text = "DODGE"
+			telegraph.cue.TextColor3 = telegraphCfg.Styles.DodgeZone.Color
+		else
+			telegraph.cue.Text = ""
+		end
+		return
+	end
 
 	if telegraph.canBeParried then
 		local lead = telegraphCfg.ParryCueLead

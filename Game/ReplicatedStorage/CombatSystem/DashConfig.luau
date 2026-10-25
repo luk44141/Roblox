@@ -12,10 +12,13 @@ local DashConfig = {
 	Key = Enum.KeyCode.Q,
 
 	-- Tiempos
-	Duration = 0.25,
-	Distance = 8,
+	-- [CAMBIO] Distance 8 -> 13 (más alcance) y Duration 0.25 -> 0.28 (la velocidad pico sube poco: ~93 studs/s).
+	-- [CAMBIO] RecoveryTime 0.15 -> 0.06: es el tiempo tras el dash en que no se puede atacar ni bloquear
+	-- (el servidor lo usa en DodgeService.IsBusy). La invulnerabilidad y el Perfect Dodge NO cambian.
+	Duration = 0.28,
+	Distance = 13,
 	Cooldown = 0.65, -- Desde el INICIO del dash
-	RecoveryTime = 0.15,
+	RecoveryTime = 0.06,
 	InvulnerabilityDuration = 0.12, -- Desde el inicio del dash
 	PerfectDodgeWindow = 0.08, -- Golpe que se resuelve dentro de esta ventana desde el inicio del dash = Perfect Dodge
 	-- (debe ser <= InvulnerabilityDuration)

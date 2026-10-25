@@ -4,6 +4,12 @@
 -- CAMBIOS respecto a tu versión (marcados con [NUEVO]):
 --   * Movement.Dash: restricciones de movimiento durante el dash y su recuperación.
 --   * Feedback.Numbers.Styles: estilos "Dodged" y "PerfectDodge".
+-- CAMBIOS de esta actualización (marcados con [v2]):
+--   * Movement: perfil Light más ágil, fases Block y Parry, recuperación del dash más ligera.
+--   * Attacks.Heavy (tecla R): PlayerCooldown = 20 y ContinuesCombo. Attacks.DodgeDummyM1 (dummy de Perfect Dodge).
+--   * Telegraph: rol DodgeTrainer, zonas de Dodge / Perfect Dodge.
+--   * Feedback.Impact: efectos para Dodged y PerfectDodge.
+--   * Dummies.PerfectDodgeDummy y CooldownHUD.
 
 local CombatConfig = {}
 
@@ -92,8 +98,25 @@ CombatConfig.Attacks = {
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 	},
+	-- [v2] Ataque del PerfectDodgeDummy. Anticipación larga (1 s) para aprender el timing del dash.
+	--   [v2.1] Box reducida (antes 24x8x24). Ahora es una caja chica delante del dummy: si te alejás con el dash antes
+	--   del impacto el golpe puede fallar (sin daño y sin mensaje de dodge); para practicar, quedate cerca del dummy.
+	--   TrainDodge: el telegraph dibuja las zonas de Dodge y Perfect Dodge (ver CombatIndicators).
+	DodgeDummyM1 = {
+		Label = "DODGE", Damage = 10, Windup = 1.0, Active = 0.15, Recovery = 0.4, Cooldown = 1,
+		Box = { Size = Vector3.new(8, 6, 8), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = false, BreaksGuard = false,
+		MovementProfile = "Light",
+		TrainDodge = true,
+	},
+	-- Habilidad R del jugador.
+	--   Cooldown: lo usan los dummies (GuardBreakDummy).
+	--   [v2] PlayerCooldown: cooldown REAL para jugadores (20 s). Lo aplica y lo sincroniza el servidor.
+	--   [v2] ContinuesCombo: usada dentro de un combo no lo reinicia; reabre la ventana para seguir con M1.
 	Heavy = {
 		Label = "GUARD BREAK", Damage = 25, Windup = 0.55, Active = 0.2, Recovery = 0.7, Cooldown = 3,
+		PlayerCooldown = 20,
+		ContinuesCombo = true,
 		Box = { Size = Vector3.new(6, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = false, CanBeParried = false, BreaksGuard = true,
 		MovementProfile = "Heavy",
@@ -119,11 +142,13 @@ CombatConfig.Combo = {
 CombatConfig.Movement = {
 	AllowJump = false,
 	Profiles = {
+		-- [v2.1] M1 aún más ágil (original 8 / 5 / 6 / 10; v2: 12 / 9 / 11 / 14 studs/s). Heavy (R) no cambia.
+		-- Con WalkSpeed 16 casi no hay penalización caminando; el sprint (24) sí queda topado.
 		Light = {
-			Windup = { MaxSpeed = 8, Forward = 1, Lateral = 0.6, Backward = 0.4 },
-			Active = { MaxSpeed = 5, Forward = 0.8, Lateral = 0.4, Backward = 0.2 },
-			Recovery = { MaxSpeed = 6, Forward = 0.8, Lateral = 0.6, Backward = 0.4 },
-			ComboWindow = { MaxSpeed = 10, Forward = 1, Lateral = 0.8, Backward = 0.6 },
+			Windup = { MaxSpeed = 15, Forward = 1, Lateral = 1, Backward = 0.85 },
+			Active = { MaxSpeed = 13, Forward = 1, Lateral = 0.9, Backward = 0.7 },
+			Recovery = { MaxSpeed = 15, Forward = 1, Lateral = 1, Backward = 0.85 },
+			ComboWindow = { MaxSpeed = 18, Forward = 1, Lateral = 1, Backward = 1 },
 		},
 		Heavy = {
 			Windup = { MaxSpeed = 5, Forward = 0.8, Lateral = 0.4, Backward = 0.3 },
@@ -139,8 +164,18 @@ CombatConfig.Movement = {
 	--   Recovery: tras el dash, movilidad reducida (el sprint no da ventaja: MaxSpeed es absoluto).
 	Dash = {
 		Active = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
-		Recovery = { MaxSpeed = 6, Forward = 0.8, Lateral = 0.6, Backward = 0.4 },
+		-- [v2] Recuperación más ligera (antes MaxSpeed 6 / 0.8 / 0.6 / 0.4).
+		Recovery = { MaxSpeed = 14, Forward = 1, Lateral = 1, Backward = 0.85 },
 	},
+
+	-- [v2] Defensa. Las aplica MovementController con las mismas reglas que las demás fases.
+	--   Block: mientras se mantiene F y el servidor confirma el bloqueo (atributo CombatDefense = "Blocking").
+	--   Parry: durante la ventana de parry (CombatDefense = "Parry"); algo más lento que Block.
+	--   MaxSpeed es un tope ABSOLUTO: el sprint no lo anula. AllowJump = true conserva el salto
+	--   (antes de este cambio se podía saltar bloqueando).
+	-- [v2.1] Menos penalización (v2: Block 9 / Parry 6). Block ~75% de caminar, Parry ~62%.
+	Block = { MaxSpeed = 12, Forward = 1, Lateral = 0.95, Backward = 0.85, AllowJump = true },
+	Parry = { MaxSpeed = 10, Forward = 1, Lateral = 0.85, Backward = 0.75, AllowJump = true },
 }
 
 -- Defensa
@@ -194,13 +229,16 @@ CombatConfig.Feedback = {
 			Parried = { Color = Color3.fromRGB(190, 120, 255), Size = 30, Suffix = "" },
 			-- [NUEVO]
 			Dodged = { Color = Color3.fromRGB(170, 235, 255), Size = 24, Suffix = "" },
-			PerfectDodge = { Color = Color3.fromRGB(110, 255, 220), Size = 32, Suffix = "" },
+			PerfectDodge = { Color = Color3.fromRGB(110, 255, 220), Size = 38, Suffix = "" }, -- [v2] 32 -> 38
 		},
 	},
 	Impact = {
 		Normal = { Color = Color3.fromRGB(255, 255, 255), StartSize = 1, EndSize = 3, Time = 0.18, Highlight = false },
 		Finisher = { Color = Color3.fromRGB(255, 205, 40), StartSize = 2, EndSize = 9, Time = 0.3, Highlight = true },
 		GuardBreak = { Color = Color3.fromRGB(255, 120, 40), StartSize = 2, EndSize = 7, Time = 0.28, Highlight = true },
+		-- [v2] Se ven sobre el jugador que esquiva: el Perfect Dodge es claramente más grande y brillante.
+		Dodged = { Color = Color3.fromRGB(170, 235, 255), StartSize = 1, EndSize = 4, Time = 0.2, Highlight = false },
+		PerfectDodge = { Color = Color3.fromRGB(110, 255, 220), StartSize = 2, EndSize = 10, Time = 0.35, Highlight = true },
 	},
 }
 
@@ -209,13 +247,20 @@ CombatConfig.Feedback = {
 --   ParryCueLead: margen (s) antes del impacto en que ya no conviene pulsar F (latencia).
 CombatConfig.Telegraph = {
 	Enabled = true,
-	Roles = { BasicAttacker = true, GuardBreak = true },
+	Roles = { BasicAttacker = true, GuardBreak = true, DodgeTrainer = true },
 	Offset = Vector3.new(0, 4.3, 0),
 	ParryCueLead = 0.05,
+	-- [v2] Igual que ParryCueLead pero para la tecla del dash: margen (s) por latencia. La pulsación tarda en llegar
+	-- al servidor, así que las zonas se adelantan este tiempo. Subilo si tu ping es alto.
+	DodgeCueLead = 0.05,
 	LingerAfterImpact = 0.2,
 	Styles = {
 		Normal = { Color = Color3.fromRGB(255, 225, 90) },
 		GuardBreak = { Color = Color3.fromRGB(255, 110, 40) },
+		-- [v2] Dummy de Perfect Dodge
+		Dodge = { Color = Color3.fromRGB(120, 200, 255) },
+		DodgeZone = { Color = Color3.fromRGB(120, 200, 255) },     -- Dodge normal
+		PerfectZone = { Color = Color3.fromRGB(110, 255, 220) },   -- Perfect Dodge
 	},
 }
 
@@ -265,6 +310,29 @@ CombatConfig.Dummies = {
 	},
 	BlockingDummy = { Role = "Blocking", PermanentBlock = true },
 	ParryDummy = { Role = "Parry", PermanentBlock = true, AutoParry = true },
+	-- [v2] Hay que crear el modelo "PerfectDodgeDummy" en Workspace.CombatDummies (ver instrucciones).
+	PerfectDodgeDummy = {
+		Role = "DodgeTrainer",
+		AutoAttack = { Attack = "DodgeDummyM1", Interval = 3 },
+	},
+}
+
+-- [v2] HUD de cooldowns (cliente). Las duraciones salen de DashConfig.Cooldown, Attacks.Heavy.PlayerCooldown y
+-- Block.ParryCooldown; los tiempos restantes los publica el servidor en atributos del Player.
+CombatConfig.CooldownHUD = {
+	Enabled = true,
+	SlotSize = 62,
+	Spacing = 10,
+	BottomOffset = 26,
+	DisplayOrder = 40,
+	ReadyColor = Color3.fromRGB(110, 255, 170),
+	CooldownColor = Color3.fromRGB(255, 120, 90),
+	BackgroundColor = Color3.fromRGB(18, 20, 26),
+	Slots = {
+		{ Id = "Dash", Name = "DASH" },
+		{ Id = "Heavy", Name = "GUARD BREAK" },
+		{ Id = "Parry", Name = "PARRY" },
+	},
 }
 
 return CombatConfig

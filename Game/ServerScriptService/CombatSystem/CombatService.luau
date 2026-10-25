@@ -12,7 +12,10 @@
 -- Orden de resolución de un impacto (resolveHit):
 --   canDamage -> Dodge (invulnerabilidad del dash / Perfect Dodge) -> Parry -> Guard break -> Block -> Hit
 -- [NUEVO en esta versión]: DodgeService, acción "Dash" del remote, y los puntos marcados con [DASH].
+-- [v2] Puntos marcados con [R] (habilidad R = ataque "Heavy": cooldown real de 20 s, combos), [CD] (cooldowns que
+-- sobreviven al respawn y se publican como atributos del Player) y [DEF] (atributo CombatDefense para la velocidad).
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
@@ -26,6 +29,7 @@ local CombatService = {}
 type CombatState = {
 	character: Model,
 	humanoid: Humanoid,
+	player: Player?,                -- [CD] nil en dummies
 	ownerKind: string,
 	action: string,                 -- "Idle" | "Windup" | "Active" | "Recovery"
 	currentAttack: string?,
@@ -45,6 +49,7 @@ type CombatState = {
 	comboWindowUntil: number,
 	comboEndCooldownUntil: number,
 	bufferedM1At: number?,
+	bufferedHeavyAt: number?,       -- [R] R pulsada durante Active/Recovery de un M1
 	phaseToken: number,
 	telegraphing: boolean,
 	tracks: { [string]: AnimationTrack },
@@ -58,6 +63,10 @@ type RegisterOptions = {
 }
 
 local states: { [Model]: CombatState } = {}
+
+-- [CD] Cooldowns de ataques de los JUGADORES, por UserId: sobreviven al respawn (morir ya no resetea la R).
+-- Cada valor es un os.clock() de "listo desde".
+local playerCooldowns: { [number]: { [string]: number } } = {}
 
 local COMBO_SEQUENCE = CombatConfig.Combo.Sequence
 local COMBO_INDEX_OF: { [string]: number } = {}
@@ -91,6 +100,13 @@ local feedbackRemote = getOrCreateRemote(CombatConfig.Remotes.Feedback)
 
 local function fireFeedback(payload)
 	feedbackRemote:FireAllClients(payload)
+end
+
+-- [CD] Publica cuándo termina un cooldown como atributo del Player ("CooldownEnd_<clave>", tiempo del SERVIDOR
+-- según Workspace:GetServerTimeNow; 0 = listo). Es la única fuente que lee el HUD del cliente.
+local function publishCooldown(player: Player, key: string, readyAtClock: number)
+	local remaining = readyAtClock - os.clock()
+	player:SetAttribute("CooldownEnd_" .. key, if remaining > 0 then workspace:GetServerTimeNow() + remaining else 0)
 end
 
 ---------------------------------------------------------------------
@@ -128,6 +144,11 @@ local function refreshDefenseVisual(state: CombatState)
 		visual = "Blocking"
 	end
 	HitboxService.SetHurtboxState(state.character, visual)
+
+	-- [DEF] El cliente (init.local) lo traduce en la fase de movimiento "Block" / "Parry".
+	if state.ownerKind == "Player" then
+		state.character:SetAttribute("CombatDefense", if visual == "Normal" then "None" else visual)
+	end
 end
 
 local function scheduleVisualRefresh(state: CombatState, delaySeconds: number)
@@ -206,6 +227,7 @@ local function cancelAttack(state: CombatState)
 	state.action = "Idle"
 	state.currentAttack = nil
 	state.bufferedM1At = nil
+	state.bufferedHeavyAt = nil
 	state.comboIndex = 0
 	state.comboWindowUntil = 0
 	stopTrack(state)
@@ -342,7 +364,7 @@ local function resolveHit(attackerState: CombatState, targetState: CombatState, 
 	local dealt = 0
 	if damage > 0 then
 		dealt = math.min(damage, targetState.humanoid.Health)
-		targetState.humanoid:TakeDamage(damage)
+		targetState.humanoid:TakeDamage(dealt) -- [v2] antes TakeDamage(damage): ahora se aplica lo mismo que se registra
 	end
 
 	-- Un parry exitoso aturde al atacante (una sola vez por impacto).
@@ -405,12 +427,19 @@ local function beginAttack(state: CombatState, attackName: string, def)
 	state.currentAttack = attackName
 	state.attackToken += 1
 	state.bufferedM1At = nil
+	state.bufferedHeavyAt = nil
 	local token = state.attackToken
 
-	-- Un ataque fuera del combo (R, dummies) reinicia el combo.
+	-- Un ataque fuera del combo reinicia el combo, SALVO que sea una habilidad que lo continúa (R: ContinuesCombo)
+	-- y se use con el combo vivo (dentro de su ventana). Así R no interrumpe el combo: lo "puentea".
 	if not COMBO_INDEX_OF[attackName] then
-		state.comboIndex = 0
-		state.comboWindowUntil = 0
+		local continues = def.ContinuesCombo == true
+			and state.comboIndex > 0
+			and os.clock() <= state.comboWindowUntil
+		if not continues then
+			state.comboIndex = 0
+			state.comboWindowUntil = 0
+		end
 	end
 
 	setMovePhase(state, "Windup", def.MovementProfile)
@@ -430,40 +459,49 @@ local function beginAttack(state: CombatState, attackName: string, def)
 			ImpactTime = now + def.Windup,
 			CanBeParried = def.CanBeParried,
 			BreaksGuard = def.BreaksGuard,
+			TrainDodge = def.TrainDodge, -- [v2] solo informativo para el telegraph del PerfectDodgeDummy
 		})
 	end
 
 	task.spawn(runAttack, state, attackName, def, token)
 end
 
--- Termina la recuperación: abre la ventana de combo o cierra el combo.
-local function finishAttack(state: CombatState, attackName: string, def)
-	local now = os.clock()
-	local comboIndex = COMBO_INDEX_OF[attackName]
+-- [R] Consume las entradas recordadas durante Active/Recovery (M1 y/o R). Gana la más reciente; si no se puede
+-- ejecutar (cooldown, stun...), se prueba la otra. Devuelve true si empezó un ataque. Las entradas se descartan siempre.
+local function consumeBufferedInput(state: CombatState, now: number): boolean
+	local bufferTime = CombatConfig.Combo.BufferTime
+	local m1At = state.bufferedM1At
+	local heavyAt = state.bufferedHeavyAt
+	state.bufferedM1At = nil
+	state.bufferedHeavyAt = nil
 
-	if not comboIndex then
-		setMovePhase(state, "None")
-		return
+	local wantsM1 = m1At ~= nil and now - m1At <= bufferTime
+	local wantsHeavy = heavyAt ~= nil and now - heavyAt <= bufferTime
+
+	local heavyFirst = wantsHeavy and (not wantsM1 or (heavyAt :: number) >= (m1At :: number))
+	if heavyFirst then
+		if CombatService.StartAttack(state.character, "Heavy") then
+			return true
+		end
+		return wantsM1 and startComboHit(state, now)
 	end
 
-	if comboIndex >= #COMBO_SEQUENCE then
-		state.comboIndex = 0
-		state.comboWindowUntil = 0
-		state.comboEndCooldownUntil = now + CombatConfig.Combo.EndCooldown
-		state.bufferedM1At = nil
-		setMovePhase(state, "None")
-		return
+	if wantsM1 and startComboHit(state, now) then
+		return true
 	end
+	if wantsHeavy and CombatService.StartAttack(state.character, "Heavy") then
+		return true
+	end
+	return false
+end
 
+-- Reabre la ventana de combo tras un golpe M1, o tras R cuando R puenteó un combo en curso.
+local function openComboWindow(state: CombatState, def, now: number)
 	state.comboWindowUntil = now + CombatConfig.Combo.Window
 
-	-- Clic recordado durante Active/Recovery: encadena el siguiente golpe de inmediato.
-	local buffered = state.bufferedM1At
-	state.bufferedM1At = nil
-	if buffered and now - buffered <= CombatConfig.Combo.BufferTime then
-		if startComboHit(state, now) then
-			return
-		end
+	-- Entrada recordada durante Active/Recovery: encadena de inmediato.
+	if consumeBufferedInput(state, now) then
+		return
 	end
 
 	local phaseToken = setMovePhase(state, "ComboWindow", def.MovementProfile)
@@ -472,6 +510,37 @@ local function finishAttack(state: CombatState, attackName: string, def)
 			setMovePhase(state, "None")
 		end
 	end)
+end
+
+-- Termina la recuperación: abre la ventana de combo o cierra el combo.
+local function finishAttack(state: CombatState, attackName: string, def)
+	local now = os.clock()
+	local comboIndex = COMBO_INDEX_OF[attackName]
+
+	if not comboIndex then
+		-- [R] R usada con un combo vivo (ver beginAttack): el combo sigue, con su mismo índice, y se reabre la ventana.
+		if def.ContinuesCombo and state.comboIndex > 0 then
+			openComboWindow(state, def, now)
+		else
+			state.bufferedM1At = nil
+			state.bufferedHeavyAt = nil
+			setMovePhase(state, "None")
+		end
+		return
+	end
+
+	if comboIndex >= #COMBO_SEQUENCE then
+		state.comboIndex = 0
+		state.comboWindowUntil = 0
+		state.comboEndCooldownUntil = now + CombatConfig.Combo.EndCooldown
+		-- [R] Una R recordada durante el golpe final sí se ejecuta (un M1 recordado no: lo frena EndCooldown).
+		if not consumeBufferedInput(state, now) then
+			setMovePhase(state, "None")
+		end
+		return
+	end
+
+	openComboWindow(state, def, now)
 end
 
 function runAttack(state: CombatState, attackName: string, def, token: number)
@@ -564,8 +633,12 @@ function CombatService.RequestM1(character: Model): boolean
 	end
 
 	local current = state.currentAttack
-	if (state.action == "Active" or state.action == "Recovery") and current and COMBO_INDEX_OF[current] then
-		state.bufferedM1At = now
+	if (state.action == "Active" or state.action == "Recovery") and current then
+		local currentDef = CombatConfig.Attacks[current]
+		-- [R] También se recuerda el clic durante una R que puentea un combo en curso.
+		if COMBO_INDEX_OF[current] or (currentDef ~= nil and currentDef.ContinuesCombo and state.comboIndex > 0) then
+			state.bufferedM1At = now
+		end
 	end
 	return false
 end
@@ -592,9 +665,52 @@ function CombatService.StartAttack(character: Model, attackName: string): boolea
 		return false
 	end
 
-	state.cooldowns[attackName] = now + (def.Cooldown or 0)
+	-- [R] Los jugadores usan PlayerCooldown (R = 20 s); los dummies siguen con Cooldown.
+	local cooldown = def.Cooldown or 0
+	if state.ownerKind == "Player" and def.PlayerCooldown then
+		cooldown = def.PlayerCooldown
+	end
+	local readyAt = now + cooldown
+	state.cooldowns[attackName] = readyAt
+	if state.player and cooldown > 0 then
+		publishCooldown(state.player, attackName, readyAt) -- [CD] el HUD se sincroniza con esto
+	end
+
 	beginAttack(state, attackName, def)
 	return true
+end
+
+-- [R] Habilidad R del jugador (remote "Heavy"). Reglas:
+--   * Con cooldown activo se rechaza SIN recordar nada (no se puede "pre-cargar" por encima del cooldown).
+--   * En reposo o en la ventana de combo se ejecuta al instante (y no reinicia el combo: ver beginAttack).
+--   * Durante Active/Recovery de un M1 se recuerda BufferTime y se ejecuta al terminar la recuperación.
+--   * El cooldown de 20 s empieza cuando R realmente arranca, y lo valida siempre StartAttack.
+function CombatService.RequestHeavy(character: Model): boolean
+	local state = states[character]
+	if not state or state.ownerKind ~= "Player" or not isAlive(state) then
+		return false
+	end
+
+	local now = os.clock()
+	if isStunned(state, now) or state.blockHeld or state.permanentBlock then
+		return false
+	end
+	if DodgeService.IsBusy(character) then
+		return false
+	end
+	if now < (state.cooldowns.Heavy or 0) then
+		return false
+	end
+
+	if state.action == "Idle" then
+		return CombatService.StartAttack(character, "Heavy")
+	end
+
+	local current = state.currentAttack
+	if (state.action == "Active" or state.action == "Recovery") and current and COMBO_INDEX_OF[current] then
+		state.bufferedHeavyAt = now
+	end
+	return false
 end
 
 -- Utilidad de depuración: aturde a un personaje registrado (respeta duración e inmunidad).
@@ -629,6 +745,7 @@ function CombatService.SetBlockHeld(character: Model, held: boolean): boolean
 
 		local now = os.clock()
 		state.blockHeld = true
+		state.bufferedHeavyAt = nil
 
 		-- Empezar a bloquear cierra la ventana de combo.
 		if state.comboIndex > 0 then
@@ -642,6 +759,9 @@ function CombatService.SetBlockHeld(character: Model, held: boolean): boolean
 		if now >= state.guardBrokenUntil and now >= state.stunUntil and now >= state.parryReadyAt then
 			state.parryUntil = now + CombatConfig.Block.ParryWindow
 			state.parryReadyAt = now + CombatConfig.Block.ParryCooldown
+			if state.player then
+				publishCooldown(state.player, "Parry", state.parryReadyAt) -- [CD]
+			end
 			scheduleVisualRefresh(state, CombatConfig.Block.ParryWindow)
 		end
 	else
@@ -671,14 +791,27 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		return states[character]
 	end
 
+	-- [CD] Los jugadores comparten su tabla de cooldowns entre personajes (respawn) y se republica el estado.
+	local player: Player? = if ownerKind == "Player" then Players:GetPlayerFromCharacter(character) else nil
+	local cooldowns: { [string]: number } = {}
+	if player then
+		cooldowns = playerCooldowns[player.UserId] or {}
+		playerCooldowns[player.UserId] = cooldowns
+		for key, readyAt in cooldowns do
+			publishCooldown(player, key, readyAt)
+		end
+		player:SetAttribute("CooldownEnd_Parry", 0) -- el parry sí empieza limpio con cada personaje
+	end
+
 	local state: CombatState = {
 		character = character,
 		humanoid = humanoid :: Humanoid,
+		player = player,
 		ownerKind = ownerKind,
 		action = "Idle",
 		currentAttack = nil,
 		attackToken = 0,
-		cooldowns = {},
+		cooldowns = cooldowns,
 		blockHeld = false,
 		permanentBlock = options ~= nil and options.PermanentBlock == true,
 		autoParry = options ~= nil and options.AutoParry == true,
@@ -693,6 +826,7 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		comboWindowUntil = 0,
 		comboEndCooldownUntil = 0,
 		bufferedM1At = nil,
+		bufferedHeavyAt = nil,
 		phaseToken = 0,
 		telegraphing = false,
 		tracks = {},
@@ -708,6 +842,9 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		cancelAttack(state)
 		setMovePhase(state, "None")
 		character:SetAttribute("CombatStunned", false)
+		if ownerKind == "Player" then
+			character:SetAttribute("CombatDefense", "None") -- [DEF]
+		end
 	end)
 
 	character.Destroying:Connect(function()
@@ -773,6 +910,17 @@ DodgeService.Init({
 	onDashStarted = onDashStarted,
 })
 
+-- [CD] Al salir, los cooldowns se conservan unos segundos (más que el mayor) para que salir y volver a entrar al
+-- mismo servidor no los resetee; después se liberan.
+Players.PlayerRemoving:Connect(function(player: Player)
+	local userId = player.UserId
+	task.delay(30, function()
+		if not Players:GetPlayerByUserId(userId) then
+			playerCooldowns[userId] = nil
+		end
+	end)
+end)
+
 ---------------------------------------------------------------------
 -- Entrada del cliente: el servidor valida todo
 ---------------------------------------------------------------------
@@ -790,7 +938,7 @@ requestRemote.OnServerEvent:Connect(function(player: Player, action: any, argume
 	if action == "M1" then
 		CombatService.RequestM1(character)
 	elseif action == "Heavy" then
-		CombatService.StartAttack(character, "Heavy")
+		CombatService.RequestHeavy(character) -- [R] antes StartAttack: ahora admite combo, buffer y cooldown de 20 s
 	elseif action == "BlockStart" then
 		CombatService.SetBlockHeld(character, true)
 	elseif action == "BlockEnd" then

@@ -13,6 +13,12 @@
 	  - FollowSharpnessXZ 18 -> 22 (menos retraso del personaje en pantalla al correr).
 	  - Nuevos: SprintFov, DashFov, DashPullback, ShiftLock.EffectScale.
 	  - ShiftLock.CharacterTurnSharpness se movió a MovementConfig.Orientation (lo usa CharacterOrientation).
+
+	Cambios de esta actualización [v2]:
+	  - NormalFraming: la cámara normal usa un encuadre parecido al del Shift Lock (hombro + algo más de altura).
+	  - DefaultPitch 20 -> 24 (vista algo más elevada).
+	  - ShiftLock.SwapInNormalMode: la tecla de cambio de hombro también funciona en cámara normal.
+	  - ShiftLock.Dot.ShowInNormalMode / HideDuringLockOn ahora SÍ se leen (antes la config existía pero ShiftLock no la usaba).
 ]]
 
 local CameraConfig = {
@@ -28,7 +34,7 @@ local CameraConfig = {
 
 	-- Encuadre
 	FocusHeight = 2, -- Altura del punto que mira la cámara, sobre el HumanoidRootPart
-	DefaultPitch = 20, -- Cámara elevada respecto al personaje
+	DefaultPitch = 24, -- Cámara elevada respecto al personaje [v2: antes 20]
 	MinPitch = -25, -- Negativo = cámara por debajo del foco, mirando hacia arriba
 	MaxPitch = 80,
 
@@ -100,6 +106,19 @@ local CameraConfig = {
 		Distance = 1.0, -- Studs
 	},
 
+	-- [v2] Encuadre de la cámara NORMAL (mismos ejes que el ShiftLock: hombro / elevación / distancia).
+	--   [v2.1] SIN hombro: ShoulderOffset = 0, el personaje queda centrado horizontalmente. El hombro y su cambio
+	--   (X) son solo del ShiftLock. VerticalOffset sube el punto que apunta la cámara: el personaje queda más abajo
+	--   en pantalla y la mira (centro de la pantalla) queda JUSTO ENCIMA de él, distinto del ShiftLock (mira al costado).
+	--   Al activar el ShiftLock se mezcla con ShiftLock.* y con lock-on activo se anula (el lock-on encuadra solo).
+	NormalFraming = {
+		Enabled = true,
+		ShoulderOffset = 0,
+		VerticalOffset = 1.8,
+		DistanceScale = 0.85, -- Multiplica el zoom actual (el zoom con la rueda sigue funcionando)
+		LockOnSharpness = 6, -- Velocidad con la que el encuadre se centra al fijar un objetivo (y vuelve al soltarlo)
+	},
+
 	-- Colisión con paredes
 	Collision = {
 		Radius = 0.4,
@@ -113,6 +132,7 @@ local CameraConfig = {
 	ShiftLock = {
 		ToggleKey = Enum.KeyCode.LeftAlt,
 		SwapShoulderKey = Enum.KeyCode.X,
+		SwapInNormalMode = false, -- [v2.1] false: X solo cambia el hombro con el ShiftLock activo
 		StartShoulder = "Right", -- "Right" o "Left"
 
 		ShoulderOffset = 2.2,

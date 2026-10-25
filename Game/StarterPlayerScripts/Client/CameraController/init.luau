@@ -9,6 +9,11 @@
 	Rotación: el mouse rota yaw/pitch solo con el cursor bloqueado (CursorController), igual en modo
 	normal y en ShiftLock. Con el cursor libre la orientación queda fija y la cámara solo sigue la posición.
 
+	[v2] Encuadre: la cámara normal usa CameraConfig.NormalFraming (hombro + elevación + distancia, parecido al
+	ShiftLock). Se mezcla con el del ShiftLock según su transición y se anula con lock-on, así que hay UN solo
+	cálculo de cámara y la orientación del personaje (CharacterOrientation) sigue leyendo solo yaw / lock-on.
+	La mira (punto central) la dibuja ShiftLock en ambos modos.
+
 	Con lock-on activo:
 	  - yaw/pitch convergen suavemente hacia el objetivo (el mouse no rota); al soltarlo no hay salto.
 	  - el zoom (rueda) sigue funcionando.
@@ -65,6 +70,7 @@ local strafe = 0
 local landOffset, landVelocity = 0, 0
 local wasAirborne, peakDownSpeed = false, 0
 local sprintFovBlend, dashBlend = 0, 0
+local lockBlend = 0 -- [v2] 0..1: cuánto del encuadre normal se anula por el lock-on
 
 local wasRotating = false
 
@@ -164,6 +170,7 @@ local function resetCamera()
 	landOffset, landVelocity = 0, 0
 	wasAirborne, peakDownSpeed = false, 0
 	sprintFovBlend, dashBlend = 0, 0
+	lockBlend = 0
 	wasRotating = false
 end
 
@@ -297,12 +304,18 @@ local function onRenderStep(deltaTime)
 	-- 2) Zoom suavizado
 	zoom += (zoomTarget - zoom) * smoothAlpha(cfg.ZoomSharpness, dt)
 
-	-- 3) Shift Lock: transición y hombro (suprimido con lock-on)
-	local blend, shoulder = shiftLock:Update(dt, rotationActive and not lockActive, lockActive)
+	-- 3) Shift Lock: transición y hombro (suprimido con lock-on). La mira también se muestra en cámara normal.
+	local alive = humanoid.Health > 0
+	local blend, shoulder = shiftLock:Update(dt, rotationActive and alive, lockActive)
 	local effectScale = lerp(1, cfg.ShiftLock.EffectScale, blend)
 
+	-- [v2] Peso del encuadre de la cámara normal: se apaga con ShiftLock (lo reemplaza su propio encuadre) y con lock-on
+	-- (el lock-on centra la cámara entre el personaje y el objetivo). Ambas mezclas son suaves: sin saltos.
+	local nf = cfg.NormalFraming
+	lockBlend += ((if lockActive then 1 else 0) - lockBlend) * smoothAlpha(nf.LockOnSharpness, dt)
+	local normalWeight = if nf.Enabled then (1 - blend) * (1 - lockBlend) else 0
+
 	-- 4) Movimiento del personaje (se lee ANTES del seguimiento: este usa la velocidad vertical)
-	local alive = humanoid.Health > 0
 	local velocity = root.AssemblyLinearVelocity
 	local grounded = alive and humanoid.FloorMaterial ~= Enum.Material.Air
 	local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
@@ -390,8 +403,11 @@ local function onRenderStep(deltaTime)
 
 	local sl = cfg.ShiftLock
 	local pullback = if cfg.DashPullback.Enabled then cfg.DashPullback.Distance * dashBlend else 0
-	local distance = zoom * lerp(1, sl.DistanceScale, blend) + pullback
-	local localOffset = Vector3.new(shoulder * sl.ShoulderOffset * blend, sl.VerticalOffset * blend, distance)
+	local distanceScale = lerp(lerp(1, nf.DistanceScale, normalWeight), sl.DistanceScale, blend)
+	local distance = zoom * distanceScale + pullback
+	local shoulderOffset = nf.ShoulderOffset * normalWeight + sl.ShoulderOffset * blend
+	local verticalOffset = nf.VerticalOffset * normalWeight + sl.VerticalOffset * blend
+	local localOffset = Vector3.new(shoulder * shoulderOffset, verticalOffset, distance)
 	local desiredPosition = (CFrame.new(origin) * rotation) * localOffset
 
 	local toCamera = desiredPosition - origin

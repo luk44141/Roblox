@@ -4,8 +4,13 @@
 -- NUNCA escribe WalkSpeed (SprintController es su único dueño) NI Humanoid.AutoRotate NI HumanoidRootPart.CFrame
 -- (CharacterOrientation es el único dueño de la orientación; antes este módulo también orientaba hacia el lock-on).
 --
--- Fases que entiende: Windup, Active, Recovery, ComboWindow, Stunned (servidor, atributo CombatMovePhase)
--- y DashActive, DashRecovery (dash local, vía provider; ver CombatConfig.Movement.Dash).
+-- Fases que entiende: Windup, Active, Recovery, ComboWindow, Stunned (servidor, atributo CombatMovePhase),
+-- DashActive, DashRecovery (dash local, vía provider; ver CombatConfig.Movement.Dash)
+-- y [v2] Block, Parry (las decide init.local con el atributo CombatDefense del servidor; ver CombatConfig.Movement.Block/Parry).
+--
+-- Restaurar la velocidad: este módulo solo LIMITA el vector de movimiento mientras hay una fase activa. Al volver a
+-- "None" simplemente deja de escribir, así que la velocidad del jugador (caminar / sprint, que decide SprintController)
+-- vuelve sola y nunca queda un valor viejo. Prioridad de fases (la resuelve init.local): Stunned > dash > ataque > Parry > Block.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -76,6 +81,10 @@ local function getPhaseConfig(character: Model, phase: string)
 		return CombatConfig.Movement.Dash.Active
 	elseif phase == "DashRecovery" then
 		return CombatConfig.Movement.Dash.Recovery
+	elseif phase == "Block" then
+		return CombatConfig.Movement.Block
+	elseif phase == "Parry" then
+		return CombatConfig.Movement.Parry
 	end
 	local profileName = character:GetAttribute("CombatMoveProfile") or "Light"
 	local profile = CombatConfig.Movement.Profiles[profileName] or CombatConfig.Movement.Profiles.Light
@@ -106,8 +115,9 @@ local function step(dt: number)
 	local phase = getPhase() or "None"
 	local phaseConfig = if phase ~= "None" then getPhaseConfig(character, phase) else nil
 
-	-- Salto: bloqueado durante fases restringidas (salvo AllowJump).
-	if phaseConfig ~= nil and not CombatConfig.Movement.AllowJump then
+	-- Salto: bloqueado durante fases restringidas (salvo AllowJump global o de la propia fase: Block / Parry).
+	local jumpAllowed = CombatConfig.Movement.AllowJump or (phaseConfig ~= nil and phaseConfig.AllowJump == true)
+	if phaseConfig ~= nil and not jumpAllowed then
 		if not jumpOverridden then
 			savedJumpEnabled = humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
 			jumpOverridden = true
