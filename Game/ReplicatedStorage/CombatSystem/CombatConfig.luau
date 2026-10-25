@@ -1,0 +1,270 @@
+-- CombatConfig
+-- Ubicación: ReplicatedStorage > CombatSystem
+-- Configuración central del sistema de combate.
+-- CAMBIOS respecto a tu versión (marcados con [NUEVO]):
+--   * Movement.Dash: restricciones de movimiento durante el dash y su recuperación.
+--   * Feedback.Numbers.Styles: estilos "Dodged" y "PerfectDodge".
+
+local CombatConfig = {}
+
+-- Depuración visual
+CombatConfig.Debug = {
+	Enabled = true,
+	HurtboxTransparency = 0.65,
+	ParryTransparency = 0.25,
+	AttackBoxTransparency = 0.45,
+	AttackBoxDuration = 0.25,
+	FolderName = "CombatDebug",
+	PrintResults = true,
+}
+
+CombatConfig.Colors = {
+	PlayerHurtbox = Color3.fromRGB(0, 162, 255),
+	DummyHurtbox = Color3.fromRGB(0, 200, 90),
+	ActiveAttack = Color3.fromRGB(255, 50, 50),
+	SpecialZone = Color3.fromRGB(170, 85, 255),
+}
+
+CombatConfig.Tags = {
+	Hurtbox = "CombatHurtbox",
+}
+
+CombatConfig.Hurtbox = {
+	Size = Vector3.new(4, 5.5, 2),
+	Offset = Vector3.new(0, -0.25, 0),
+}
+
+-- IDs de animación. Dejalos vacíos hasta tenerlos: si un ID está vacío, no se reproduce nada.
+-- Formato: "rbxassetid://123456789". Deben ser animaciones R6 publicadas por vos o tu grupo.
+CombatConfig.Animations = {
+	M1_1 = "",   -- PENDIENTE
+	M1_2 = "",   -- PENDIENTE
+	M1_3 = "",   -- PENDIENTE
+	M1_4 = "",   -- PENDIENTE
+	M1_5 = "",   -- PENDIENTE (golpe final, más pesado)
+	DummyM1 = "",-- PENDIENTE (puede repetir el de M1_1)
+	Heavy = "",  -- PENDIENTE
+	Stun = "",   -- PENDIENTE
+}
+
+-- Ataques. Tiempos en segundos.
+--   Windup: anticipación | Active: ventana de impacto (caja fija) | Recovery: recuperación
+--   Cooldown: solo para ataques que no son parte del combo
+--   Label: texto del indicador de timing
+--   MovementProfile: perfil de CombatConfig.Movement.Profiles
+--   Finisher: marca el golpe final del combo (número y efecto distintos)
+CombatConfig.Attacks = {
+	M1_1 = {
+		Label = "M1", Damage = 8, Windup = 0.18, Active = 0.12, Recovery = 0.22,
+		Box = { Size = Vector3.new(5, 5, 5), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+	},
+	M1_2 = {
+		Label = "M1", Damage = 9, Windup = 0.16, Active = 0.12, Recovery = 0.22,
+		Box = { Size = Vector3.new(5.5, 5, 5), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+	},
+	M1_3 = {
+		Label = "M1", Damage = 10, Windup = 0.16, Active = 0.12, Recovery = 0.24,
+		Box = { Size = Vector3.new(5.5, 5, 5.5), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+	},
+	M1_4 = {
+		Label = "M1", Damage = 11, Windup = 0.18, Active = 0.12, Recovery = 0.26,
+		Box = { Size = Vector3.new(6, 5, 5.5), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+	},
+	M1_5 = {
+		Label = "M1", Damage = 20, Windup = 0.32, Active = 0.18, Recovery = 0.55,
+		Box = { Size = Vector3.new(7, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+		Finisher = true,
+	},
+	-- Ataque básico de BasicAttackerDummy: anticipación larga para aprender el timing.
+	DummyM1 = {
+		Label = "M1", Damage = 10, Windup = 0.7, Active = 0.15, Recovery = 0.4, Cooldown = 1,
+		Box = { Size = Vector3.new(5, 5, 5), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+	},
+	Heavy = {
+		Label = "GUARD BREAK", Damage = 25, Windup = 0.55, Active = 0.2, Recovery = 0.7, Cooldown = 3,
+		Box = { Size = Vector3.new(6, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = false, CanBeParried = false, BreaksGuard = true,
+		MovementProfile = "Heavy",
+	},
+}
+
+-- Combo M1 (jugadores)
+--   Window: tiempo tras terminar la recuperación de un golpe para encadenar el siguiente.
+--   BufferTime: un clic hecho durante Active/Recovery se recuerda este tiempo.
+--   EndCooldown: pausa tras el golpe final antes de poder iniciar otro combo.
+CombatConfig.Combo = {
+	Sequence = { "M1_1", "M1_2", "M1_3", "M1_4", "M1_5" },
+	Window = 0.55,
+	BufferTime = 0.35,
+	EndCooldown = 0.6,
+}
+
+-- Movilidad durante acciones (solo se aplica al jugador local, desde MovementController).
+--   MaxSpeed: tope ABSOLUTO en studs/s (anula la ventaja del sprint).
+--   Forward / Lateral / Backward: fracción de movimiento conservada en cada dirección,
+--   relativa a hacia dónde mira el personaje (0 = nada, 1 = todo).
+-- Fases: Windup, Active, Recovery, ComboWindow (espera entre golpes del combo).
+CombatConfig.Movement = {
+	AllowJump = false,
+	Profiles = {
+		Light = {
+			Windup = { MaxSpeed = 8, Forward = 1, Lateral = 0.6, Backward = 0.4 },
+			Active = { MaxSpeed = 5, Forward = 0.8, Lateral = 0.4, Backward = 0.2 },
+			Recovery = { MaxSpeed = 6, Forward = 0.8, Lateral = 0.6, Backward = 0.4 },
+			ComboWindow = { MaxSpeed = 10, Forward = 1, Lateral = 0.8, Backward = 0.6 },
+		},
+		Heavy = {
+			Windup = { MaxSpeed = 5, Forward = 0.8, Lateral = 0.4, Backward = 0.3 },
+			Active = { MaxSpeed = 2, Forward = 0.5, Lateral = 0.2, Backward = 0.1 },
+			Recovery = { MaxSpeed = 3, Forward = 0.6, Lateral = 0.3, Backward = 0.2 },
+			ComboWindow = { MaxSpeed = 10, Forward = 1, Lateral = 0.8, Backward = 0.6 },
+		},
+	},
+	Stunned = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
+
+	-- [NUEVO] Restricciones del dash (las aplica MovementController con las mismas reglas que las demás fases).
+	--   Active: el impulso lo da la física del dash; el control del Humanoid se anula para no pelear con él.
+	--   Recovery: tras el dash, movilidad reducida (el sprint no da ventaja: MaxSpeed es absoluto).
+	Dash = {
+		Active = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
+		Recovery = { MaxSpeed = 6, Forward = 0.8, Lateral = 0.6, Backward = 0.4 },
+	},
+}
+
+-- Defensa
+CombatConfig.Block = {
+	DamageMultiplier = 0.2,
+	ParryWindow = 0.25,
+	ParryCooldown = 0.8,
+	GuardBreakStun = 1.5, -- tiempo sin poder bloquear tras un guard break (no es el stun por parry)
+}
+
+-- Stun por parry.
+--   OnParried: segundos que queda aturdido el ATACANTE cuyo golpe fue desviado.
+--   ImmunityAfter: tras terminar un stun, no se puede volver a aturdir durante este tiempo
+--   (evita encadenar stuns infinitos). Un stun en curso nunca se reinicia.
+CombatConfig.Stun = {
+	OnParried = { Player = 1.0, Dummy = 1.5 },
+	ImmunityAfter = 1.0,
+	Indicator = {
+		Color = Color3.fromRGB(255, 205, 40),
+		Offset = Vector3.new(0, 3.3, 0),
+	},
+}
+
+CombatConfig.Rules = {
+	DummiesCanDamageDummies = false,
+	PlayersCanDamagePlayers = true,
+}
+
+-- Números de daño y efectos de impacto (cliente)
+CombatConfig.Feedback = {
+	Enabled = true,
+	Numbers = {
+		Duration = 1.3,                          -- segundos totales
+		RiseStuds = 3,                           -- cuánto suben
+		StartOffset = Vector3.new(0, 2.6, 0),    -- posición inicial sobre la cabeza
+		Spread = 1.3,                            -- desplazamiento lateral alternado
+		StackWindow = 0.8,                       -- golpes dentro de este tiempo se apilan
+		StackRise = 0.7,                         -- altura extra por golpe apilado
+		PopScale = 1.35,                         -- escala máxima del efecto de aparición
+		PopTime = 0.12,
+		SettleTime = 0.1,
+		FadeStart = 0.5,                         -- fracción de Duration en que empieza a desvanecerse
+		Font = Enum.Font.GothamBlack,
+		StrokeColor = Color3.fromRGB(15, 15, 15),
+		StrokeThickness = 3,
+		Styles = {
+			Normal = { Color = Color3.fromRGB(255, 255, 255), Size = 26, Suffix = "" },
+			Finisher = { Color = Color3.fromRGB(255, 205, 40), Size = 42, Suffix = "!" },
+			GuardBreak = { Color = Color3.fromRGB(255, 120, 40), Size = 34, Suffix = "" },
+			Blocked = { Color = Color3.fromRGB(90, 170, 255), Size = 22, Suffix = "" },
+			Parried = { Color = Color3.fromRGB(190, 120, 255), Size = 30, Suffix = "" },
+			-- [NUEVO]
+			Dodged = { Color = Color3.fromRGB(170, 235, 255), Size = 24, Suffix = "" },
+			PerfectDodge = { Color = Color3.fromRGB(110, 255, 220), Size = 32, Suffix = "" },
+		},
+	},
+	Impact = {
+		Normal = { Color = Color3.fromRGB(255, 255, 255), StartSize = 1, EndSize = 3, Time = 0.18, Highlight = false },
+		Finisher = { Color = Color3.fromRGB(255, 205, 40), StartSize = 2, EndSize = 9, Time = 0.3, Highlight = true },
+		GuardBreak = { Color = Color3.fromRGB(255, 120, 40), StartSize = 2, EndSize = 7, Time = 0.28, Highlight = true },
+	},
+}
+
+-- Indicadores de timing sobre dummies (se sincronizan con el tiempo real del servidor).
+--   Roles: valores de CombatRole de los dummies que muestran indicador.
+--   ParryCueLead: margen (s) antes del impacto en que ya no conviene pulsar F (latencia).
+CombatConfig.Telegraph = {
+	Enabled = true,
+	Roles = { BasicAttacker = true, GuardBreak = true },
+	Offset = Vector3.new(0, 4.3, 0),
+	ParryCueLead = 0.05,
+	LingerAfterImpact = 0.2,
+	Styles = {
+		Normal = { Color = Color3.fromRGB(255, 225, 90) },
+		GuardBreak = { Color = Color3.fromRGB(255, 110, 40) },
+	},
+}
+
+-- Lock-on (rueda del mouse = clic central)
+-- Con el controlador de cámara nuevo, CameraPitch y CameraSmoothing los LEE la cámara (LockOn ya no la escribe).
+CombatConfig.LockOn = {
+	Enabled = true,
+	AcquireDistance = 45,
+	AcquireAngle = 70,        -- semiángulo (grados) respecto a la dirección de la cámara
+	BreakDistance = 70,       -- se suelta si el objetivo se aleja más
+	TargetPlayers = true,
+	TurnSpeed = 14,           -- suavizado del giro del personaje
+	CameraSmoothing = 7,      -- suavizado de la cámara
+	CameraPitch = -12,        -- grados; negativo mira hacia abajo
+	MarkerColor = Color3.fromRGB(255, 255, 255),
+	MarkerSize = 26,
+	MarkerOffset = Vector3.new(0, 0.5, 0),
+}
+
+CombatConfig.Remotes = {
+	FolderName = "Remotes",
+	Request = "CombatRequest",
+	Feedback = "CombatFeedback",
+}
+
+-- Dummies
+CombatConfig.DummyFolderName = "CombatDummies"
+
+CombatConfig.TrainingDummy = {
+	MaxHealth = 1e9,
+}
+
+CombatConfig.DummyDefaults = {
+	MaxHealth = 1000,
+	RegenDelay = 4,
+}
+
+CombatConfig.Dummies = {
+	InfiniteHealthDummy = { Role = "Training", InfiniteHealth = true },
+	BasicAttackerDummy = {
+		Role = "BasicAttacker",
+		AutoAttack = { Attack = "DummyM1", Interval = 2.5 },
+	},
+	GuardBreakDummy = {
+		Role = "GuardBreak",
+		AutoAttack = { Attack = "Heavy", Interval = 4 },
+	},
+	BlockingDummy = { Role = "Blocking", PermanentBlock = true },
+	ParryDummy = { Role = "Parry", PermanentBlock = true, AutoParry = true },
+}
+
+return CombatConfig
