@@ -45,6 +45,10 @@ type CombatState = {
 	stunImmuneUntil: number,
 	stunToken: number,
 	stunPhaseToken: number,
+	hitStunUntil: number,           -- [HIT] hitstun por M1 recibido
+	hitStunToken: number,
+	hitStunPhaseToken: number,
+	parryChance: boolean,           -- [HIT] queda 1 intento de parry para el próximo golpe
 	comboIndex: number,
 	comboWindowUntil: number,
 	comboEndCooldownUntil: number,
@@ -121,10 +125,21 @@ local function isStunned(state: CombatState, now: number): boolean
 	return now < state.stunUntil
 end
 
+-- [HIT] Hitstun de combo: no se puede actuar, pero el parry sigue permitido (ver SetBlockHeld).
+local function isHitStunned(state: CombatState, now: number): boolean
+	return now < state.hitStunUntil
+end
+
+-- Stun real o hitstun: bloquea ataque, R, dash y bloqueo sostenido.
+local function isActionLocked(state: CombatState, now: number): boolean
+	return now < state.stunUntil or now < state.hitStunUntil
+end
+
 local function isBlocking(state: CombatState, now: number): boolean
 	return (state.blockHeld or state.permanentBlock)
 		and now >= state.guardBrokenUntil
 		and not isStunned(state, now)
+		and not isHitStunned(state, now)
 end
 
 local function isParryActive(state: CombatState, now: number): boolean
@@ -287,6 +302,75 @@ local function applyStun(state: CombatState, duration: number): boolean
 end
 
 ---------------------------------------------------------------------
+-- [HIT] Hitstun y empuje por M1 recibido
+---------------------------------------------------------------------
+
+-- Termina el hitstun (por tiempo o por parry exitoso). Es idempotente.
+local function clearHitStun(state: CombatState)
+	local wasHitStunned = state.hitStunUntil > 0
+	state.hitStunToken += 1
+	state.hitStunUntil = 0
+	state.parryChance = false
+	if wasHitStunned and state.phaseToken == state.hitStunPhaseToken and not isStunned(state, os.clock()) then
+		setMovePhase(state, "None")
+	end
+	refreshDefenseVisual(state)
+end
+
+local function applyHitReaction(attackerState: CombatState, targetState: CombatState, attackName: string, attackDef, now: number)
+	local cfg = CombatConfig.HitReaction
+	if not cfg.Enabled or targetState.ownerKind ~= "Player" or not isAlive(targetState) then
+		return
+	end
+	local comboIndex = COMBO_INDEX_OF[attackName]
+	if not comboIndex then
+		return -- solo los M1 del combo (R y los golpes de dummies no dejan hitstun)
+	end
+
+	local isFinisher = comboIndex >= #COMBO_SEQUENCE
+	local duration: number
+	if isFinisher then
+		duration = cfg.FinisherStun
+	else
+		local nextDef = CombatConfig.Attacks[COMBO_SEQUENCE[comboIndex + 1]]
+		duration = attackDef.Active + attackDef.Recovery + nextDef.Windup + cfg.StunSlack
+	end
+
+	-- Lo que estaba haciendo el objetivo se cancela.
+	DodgeService.Cancel(targetState.character, "Hit")
+	cancelAttack(targetState)
+
+	targetState.hitStunUntil = math.max(targetState.hitStunUntil, now + duration)
+	targetState.parryChance = not isFinisher
+	targetState.hitStunToken += 1
+	local token = targetState.hitStunToken
+	targetState.hitStunPhaseToken = setMovePhase(targetState, "Stunned")
+	refreshDefenseVisual(targetState)
+
+	task.delay(targetState.hitStunUntil - now, function()
+		if states[targetState.character] == targetState and targetState.hitStunToken == token then
+			clearHitStun(targetState)
+		end
+	end)
+
+	-- Empuje: en la dirección a la que mira el atacante (plano horizontal). Lo ejecuta el cliente del objetivo.
+	local kb = cfg.Knockback
+	local attackerRoot = attackerState.character:FindFirstChild("HumanoidRootPart")
+	if kb and targetState.player and attackerRoot and attackerRoot:IsA("BasePart") then
+		local look = attackerRoot.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 1e-3 then
+			feedbackRemote:FireClient(targetState.player, {
+				Kind = "Knockback",
+				Direction = flat.Unit,
+				Distance = if isFinisher then kb.FinisherDistance else kb.Distance,
+				Duration = kb.Duration,
+			})
+		end
+	end
+end
+
+---------------------------------------------------------------------
 -- Resolución de impactos
 ---------------------------------------------------------------------
 
@@ -365,6 +449,13 @@ local function resolveHit(attackerState: CombatState, targetState: CombatState, 
 	if damage > 0 then
 		dealt = math.min(damage, targetState.humanoid.Health)
 		targetState.humanoid:TakeDamage(dealt) -- [v2] antes TakeDamage(damage): ahora se aplica lo mismo que se registra
+	end
+
+	-- [HIT] M1 que conecta = hitstun + empuje; un parry exitoso libera al objetivo.
+	if outcome == "Hit" and targetState.humanoid.Health > 0 then
+		applyHitReaction(attackerState, targetState, attackName, attackDef, now)
+	elseif outcome == "Parried" then
+		clearHitStun(targetState)
 	end
 
 	-- Un parry exitoso aturde al atacante (una sola vez por impacto).
@@ -621,7 +712,7 @@ function CombatService.RequestM1(character: Model): boolean
 	end
 
 	local now = os.clock()
-	if isStunned(state, now) or state.blockHeld or state.permanentBlock then
+	if isActionLocked(state, now) or state.blockHeld or state.permanentBlock then
 		return false
 	end
 	if DodgeService.IsBusy(character) then -- [DASH] No se ataca durante el dash ni su recuperación
@@ -652,7 +743,7 @@ function CombatService.StartAttack(character: Model, attackName: string): boolea
 	end
 
 	local now = os.clock()
-	if isStunned(state, now) or state.action ~= "Idle" then
+	if isActionLocked(state, now) or state.action ~= "Idle" then
 		return false
 	end
 	if state.blockHeld or state.permanentBlock then
@@ -692,7 +783,7 @@ function CombatService.RequestHeavy(character: Model): boolean
 	end
 
 	local now = os.clock()
-	if isStunned(state, now) or state.blockHeld or state.permanentBlock then
+	if isActionLocked(state, now) or state.blockHeld or state.permanentBlock then
 		return false
 	end
 	if DodgeService.IsBusy(character) then
@@ -755,8 +846,16 @@ function CombatService.SetBlockHeld(character: Model, held: boolean): boolean
 			setMovePhase(state, "None")
 		end
 
+		-- [HIT] En hitstun de combo solo se permite el parry: 1 intento por golpe recibido, sin usar el cooldown del parry.
+		-- (blockHeld queda como intención: al terminar el hitstun, si F sigue apretada, vuelve el bloqueo normal.)
+		if now < state.hitStunUntil then
+			if state.parryChance and now >= state.guardBrokenUntil and now >= state.stunUntil then
+				state.parryChance = false
+				state.parryUntil = now + CombatConfig.Block.ParryWindow
+				scheduleVisualRefresh(state, CombatConfig.Block.ParryWindow)
+			end
 		-- Durante un stun se recuerda la intención, pero no se abre ventana de parry.
-		if now >= state.guardBrokenUntil and now >= state.stunUntil and now >= state.parryReadyAt then
+		elseif now >= state.guardBrokenUntil and now >= state.stunUntil and now >= state.parryReadyAt then
 			state.parryUntil = now + CombatConfig.Block.ParryWindow
 			state.parryReadyAt = now + CombatConfig.Block.ParryCooldown
 			if state.player then
@@ -822,6 +921,10 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		stunImmuneUntil = 0,
 		stunToken = 0,
 		stunPhaseToken = 0,
+		hitStunUntil = 0,
+		hitStunToken = 0,
+		hitStunPhaseToken = 0,
+		parryChance = false,
 		comboIndex = 0,
 		comboWindowUntil = 0,
 		comboEndCooldownUntil = 0,
@@ -838,6 +941,9 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 	humanoid.Died:Connect(function()
 		state.dead = true
 		state.blockHeld = false
+		state.hitStunToken += 1
+		state.hitStunUntil = 0
+		state.parryChance = false
 		state.stunToken += 1
 		cancelAttack(state)
 		setMovePhase(state, "None")
@@ -872,7 +978,7 @@ local function canDashFor(character: Model): (boolean, string?)
 	end
 
 	local now = os.clock()
-	if isStunned(state, now) then
+	if isActionLocked(state, now) then
 		return false, "Stunned"
 	end
 	if state.action ~= "Idle" then

@@ -241,6 +241,9 @@ table.insert(
 			DashController.OnServerResponse(payload)
 		elseif kind == "DodgeEvent" then
 			DashController.OnServerEvent(payload)
+		elseif kind == "Knockback" then
+			-- [v2.2] Empuje por M1 recibido: lo aplica el cliente dueño del personaje
+			MovementController.ApplyKnockback(payload.Direction, payload.Distance, payload.Duration)
 		end
 	end)
 )

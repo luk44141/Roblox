@@ -174,6 +174,10 @@ CombatConfig.Movement = {
 	--   MaxSpeed es un tope ABSOLUTO: el sprint no lo anula. AllowJump = true conserva el salto
 	--   (antes de este cambio se podía saltar bloqueando).
 	-- [v2.1] Menos penalización (v2: Block 9 / Parry 6). Block ~75% de caminar, Parry ~62%.
+	-- [v2.2] Frenada progresiva: al entrar en una fase con tope MÁS BAJO que tu velocidad (p. ej. sprint 24 -> M1 15),
+	-- el tope baja a este ritmo (studs/s por segundo) en vez de cortar de golpe. Stun y dash siguen siendo inmediatos.
+	SlowdownRate = 45,
+
 	Block = { MaxSpeed = 12, Forward = 1, Lateral = 0.95, Backward = 0.85, AllowJump = true },
 	Parry = { MaxSpeed = 10, Forward = 1, Lateral = 0.85, Backward = 0.75, AllowJump = true },
 }
@@ -196,6 +200,26 @@ CombatConfig.Stun = {
 	Indicator = {
 		Color = Color3.fromRGB(255, 205, 40),
 		Offset = Vector3.new(0, 3.3, 0),
+	},
+}
+
+-- [v2.2] Reacción al recibir un M1 del combo (solo jugadores como objetivo).
+--   Un M1 que CONECTA (no bloqueado, ni parryado, ni esquivado) deja al objetivo en hitstun: cancela lo que hacía y no
+--   puede moverse, atacar, bloquear ni hacer dash. Lo ÚNICO que puede hacer es intentar un parry, UNA vez por golpe
+--   recibido (esa chance no depende del cooldown del parry). Si falla, el siguiente M1 vuelve a conectar.
+--   La duración cubre hasta que llega el siguiente golpe del combo: Active + Recovery + Windup siguiente + StunSlack.
+--   Un parry exitoso libera al objetivo al instante (y aturde al atacante, como siempre).
+--   Con el M1 final (M1_5) no hay chance de parry: solo FinisherStun segundos de hitstun.
+--   Knockback: el objetivo es empujado en la dirección a la que mira el atacante (para el atacante es "hacia adelante";
+--   para quien recibe es hacia atrás). Lo aplica el cliente del objetivo (ver MovementController.ApplyKnockback).
+CombatConfig.HitReaction = {
+	Enabled = true,
+	StunSlack = 0.1,
+	FinisherStun = 0.5,
+	Knockback = {
+		Distance = 2.5,
+		FinisherDistance = 6,
+		Duration = 0.18,
 	},
 }
 

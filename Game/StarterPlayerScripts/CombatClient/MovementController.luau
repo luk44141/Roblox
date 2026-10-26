@@ -47,6 +47,12 @@ end
 -- Estado de lo que este módulo modifica temporalmente, para restaurarlo siempre.
 local lastHumanoid: Humanoid? = nil
 local jumpOverridden = false
+
+-- [v2.2] Tope de velocidad suavizado: baja gradualmente (CombatConfig.Movement.SlowdownRate) en vez de cortar de golpe.
+local currentCap: number? = nil
+
+-- [v2.2] Empuje recibido (knockback). Lo pide el servidor al cliente dueño del personaje (init.local, Kind = "Knockback").
+local knockback: any = nil
 local savedJumpEnabled = true
 local started = false
 
@@ -98,13 +104,86 @@ local function restoreJump(humanoid: Humanoid)
 	end
 end
 
+local function destroyKnockback()
+	if knockback then
+		knockback.velocity:Destroy()
+		knockback.attachment:Destroy()
+		knockback = nil
+	end
+end
+
+-- direction: dirección horizontal del empuje; distance: studs totales aproximados; duration: segundos.
+-- La velocidad parte alta y decae linealmente a 0 (recorre ~distance). Las colisiones las resuelve la física.
+function MovementController.ApplyKnockback(direction: any, distance: any, duration: any)
+	if typeof(direction) ~= "Vector3" or typeof(distance) ~= "number" or typeof(duration) ~= "number" then
+		return
+	end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
+		return
+	end
+
+	local flat = Vector3.new(direction.X, 0, direction.Z)
+	if flat.Magnitude < 1e-3 then
+		return
+	end
+	distance = math.clamp(distance, 0, 20)
+	duration = math.clamp(duration, 0.05, 0.6)
+	if distance <= 0 then
+		return
+	end
+
+	destroyKnockback()
+
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "KnockbackAttachment"
+	attachment.Parent = root
+
+	local force = root.AssemblyMass * 20000
+	local velocity = Instance.new("LinearVelocity")
+	velocity.Name = "KnockbackVelocity"
+	velocity.Attachment0 = attachment
+	velocity.RelativeTo = Enum.ActuatorRelativeTo.World
+	velocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+	velocity.MaxAxesForce = Vector3.new(force, 0, force)
+	velocity.VectorVelocity = Vector3.zero
+	velocity.Parent = root
+
+	knockback = {
+		root = root,
+		attachment = attachment,
+		velocity = velocity,
+		direction = flat.Unit,
+		startSpeed = 2 * distance / duration,
+		startTime = os.clock(),
+		duration = duration,
+	}
+end
+
+local function updateKnockback()
+	if not knockback then
+		return
+	end
+	local t = (os.clock() - knockback.startTime) / knockback.duration
+	if t >= 1 or not knockback.root.Parent then
+		destroyKnockback()
+	else
+		knockback.velocity.VectorVelocity = knockback.direction * (knockback.startSpeed * (1 - t))
+	end
+end
+
 local function step(dt: number)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	if not character or not humanoid or not root or not root:IsA("BasePart") or humanoid.Health <= 0 then
+		destroyKnockback()
+		currentCap = nil
 		return
 	end
+	updateKnockback()
 
 	-- Personaje nuevo (respawn): descartar el estado del anterior.
 	if humanoid ~= lastHumanoid then
@@ -114,6 +193,9 @@ local function step(dt: number)
 
 	local phase = getPhase() or "None"
 	local phaseConfig = if phase ~= "None" then getPhaseConfig(character, phase) else nil
+	if phaseConfig == nil then
+		currentCap = nil -- sin fase activa: no se limita nada y la velocidad (caminar / sprint) vuelve sola
+	end
 
 	-- Salto: bloqueado durante fases restringidas (salvo AllowJump global o de la propia fase: Block / Parry).
 	local jumpAllowed = CombatConfig.Movement.AllowJump or (phaseConfig ~= nil and phaseConfig.AllowJump == true)
@@ -145,7 +227,17 @@ local function step(dt: number)
 		local move = facing * forwardAmount + right * lateralAmount
 
 		-- Tope absoluto en studs/s: el sprint no da ventaja durante la acción.
-		local maxMagnitude = phaseConfig.MaxSpeed / math.max(humanoid.WalkSpeed, 0.01)
+		-- [v2.2] Frenada progresiva: si el tope nuevo es menor que la velocidad actual (WalkSpeed, p. ej. sprint 24)
+		-- baja a SlowdownRate studs/s por segundo. Los topes 0 (stun, dash activo) y las subidas son inmediatos.
+		local targetCap = phaseConfig.MaxSpeed
+		local cap = currentCap or math.max(humanoid.WalkSpeed, targetCap)
+		if targetCap <= 0 or cap <= targetCap then
+			cap = targetCap
+		else
+			cap = math.max(targetCap, cap - CombatConfig.Movement.SlowdownRate * dt)
+		end
+		currentCap = cap
+		local maxMagnitude = cap / math.max(humanoid.WalkSpeed, 0.01)
 		if move.Magnitude > maxMagnitude then
 			move = if maxMagnitude <= 0 then Vector3.zero else move.Unit * maxMagnitude
 		end
@@ -175,6 +267,8 @@ function MovementController.Stop()
 	end
 	started = false
 	RunService:UnbindFromRenderStep(RENDER_STEP_NAME)
+	destroyKnockback()
+	currentCap = nil
 
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")

@@ -29,6 +29,8 @@ CursorController.Events = CursorController.Signals.Events
 
 local mode = "Game"
 local windowFocused = true
+local lastFocusReleasedAt = 0 -- [v2.2]
+local FOCUS_HEAL_DELAY = 0.15 -- [v2.2] s: ignora la entrada del mismo instante en que se perdió el foco
 local mouseOwned = false
 local iconHidden = false
 local savedIconEnabled = true
@@ -118,12 +120,36 @@ function CursorController.Start()
 		connections,
 		UserInputService.WindowFocusReleased:Connect(function()
 			windowFocused = false
+			lastFocusReleasedAt = os.clock()
 		end)
 	)
 	table.insert(
 		connections,
 		UserInputService.WindowFocused:Connect(function()
 			windowFocused = true
+		end)
+	)
+
+	-- [v2.2] Auto-corrección: a veces (p. ej. al pulsar Alt en Windows) llega WindowFocusReleased y NUNCA WindowFocused,
+	-- y el cursor se queda desbloqueado. Si el juego vuelve a recibir entrada del mouse/teclado, la ventana está
+	-- enfocada: se recupera el foco y el cursor se vuelve a bloquear solo.
+	local function healFocus()
+		if not windowFocused and os.clock() - lastFocusReleasedAt > FOCUS_HEAL_DELAY then
+			windowFocused = true
+		end
+	end
+	table.insert(
+		connections,
+		UserInputService.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement then
+				healFocus()
+			end
+		end)
+	)
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function()
+			healFocus()
 		end)
 	)
 
