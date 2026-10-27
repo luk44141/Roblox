@@ -400,6 +400,11 @@ function DodgeService.ResolveIncomingHit(character, hitInfo)
 
 	if not state.perfect and now - state.dashStart <= cfg.PerfectDodgeWindow then
 		state.perfect = true
+		-- [v2.3] Bonus de velocidad: atributo con el tiempo del SERVIDOR en que termina; SprintController lo aplica.
+		local boost = cfg.PerfectDodgeSpeedBoost
+		if boost and state.character then
+			state.character:SetAttribute("PerfectDodgeBoostUntil", workspace:GetServerTimeNow() + boost.Duration)
+		end
 		fire("PerfectDodge", player, hitInfo)
 		broadcast("PerfectDodge", state)
 		return "PerfectDodge"

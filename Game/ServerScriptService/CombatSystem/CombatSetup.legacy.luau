@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CombatConfig = require(ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("CombatConfig"))
 local HitboxService = require(script.Parent:WaitForChild("HitboxService"))
 local CombatService = require(script.Parent:WaitForChild("CombatService"))
+local DummyPhysics = require(script.Parent:WaitForChild("DummyPhysics")) -- [v2.7]
 
 ---------------------------------------------------------------------
 -- Jugadores
@@ -109,8 +110,13 @@ local function setupDummy(dummy: Model, settings)
 		warn(`[CombatSetup] {dummy.Name} no es R6. Recrealo con Rig Builder en R6.`)
 	end
 
-	-- Estático: anclar el HumanoidRootPart ancla todo el rig.
-	root.Anchored = true
+	if settings.Movable then
+		-- [v2.7] Dummy móvil: se desancla y el servidor le aplica empuje / Uppercut / estampado / agarre (DummyPhysics).
+		DummyPhysics.Setup(dummy, humanoid, root)
+	else
+		-- Estático: anclar el HumanoidRootPart ancla todo el rig.
+		root.Anchored = true
+	end
 
 	dummy:SetAttribute("IsCombatDummy", true)
 	dummy:SetAttribute("CombatRole", settings.Role)
@@ -127,6 +133,7 @@ local function setupDummy(dummy: Model, settings)
 	CombatService.Register(dummy, "Dummy", {
 		PermanentBlock = settings.PermanentBlock,
 		AutoParry = settings.AutoParry,
+		Movable = settings.Movable,
 	})
 
 	if settings.AutoAttack then

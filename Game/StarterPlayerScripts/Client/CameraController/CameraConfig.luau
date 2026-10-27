@@ -144,7 +144,8 @@ local CameraConfig = {
 
 		TransitionTime = 0.3,
 		ShoulderSwapSharpness = 12,
-		AltTabGuardTime = 0.35, -- Si la ventana pierde el foco hasta este tiempo después del toggle, se revierte
+		AltTabGuardTime = 0.35, -- Si la ventana pierde el foco hasta este tiempo después del toggle, se evalúa revertirlo
+		AltTabConfirmTime = 0.6, -- [v2.3] ...pero solo si tras este tiempo sigue sin foco ni entrada (Alt+Tab real; no el falso de Alt)
 
 		Dot = {
 			ShowInNormalMode = true, -- true: la mira también se ve en cámara normal (cursor bloqueado). false: solo en ShiftLock

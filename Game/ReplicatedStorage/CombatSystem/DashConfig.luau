@@ -17,11 +17,21 @@ local DashConfig = {
 	-- (el servidor lo usa en DodgeService.IsBusy). La invulnerabilidad y el Perfect Dodge NO cambian.
 	Duration = 0.28,
 	Distance = 13,
-	Cooldown = 0.65, -- Desde el INICIO del dash
+	Cooldown = 2, -- Desde el INICIO del dash [v2.4: antes 0.65]
 	RecoveryTime = 0.06,
-	InvulnerabilityDuration = 0.12, -- Desde el inicio del dash
-	PerfectDodgeWindow = 0.08, -- Golpe que se resuelve dentro de esta ventana desde el inicio del dash = Perfect Dodge
+	-- [v2.9] Ventanas más generosas: el dodge normal ocupa casi todo el dash (antes 0.12 s) y el Perfect Dodge pasa de
+	-- 0.08 a 0.11 s. El dodge normal efectivo es InvulnerabilityDuration + Server.InvulnerabilityPadding (tope: Duration).
+	InvulnerabilityDuration = 0.22, -- Desde el inicio del dash
+	PerfectDodgeWindow = 0.11, -- Golpe que se resuelve dentro de esta ventana desde el inicio del dash = Perfect Dodge
 	-- (debe ser <= InvulnerabilityDuration)
+
+	-- [v2.3] Lo ÚNICO que distingue un Perfect Dodge de un dodge normal en el juego: un poco de velocidad de
+	-- movimiento. WalkSpeed (caminar y sprint) se multiplica por Multiplier durante Duration segundos.
+	-- (Los textos y destellos de HitFeedback solo sirven para ver cuál fue; no cambian nada del combate.)
+	PerfectDodgeSpeedBoost = {
+		Multiplier = 1.2,
+		Duration = 2.0,
+	},
 
 	MaxCharges = 1,
 
@@ -32,9 +42,12 @@ local DashConfig = {
 		Mode = "FourWay", -- "FourWay" o "Free"
 		NoInput = "Backward", -- Sin teclas: "Backward" o "Forward"
 		AlignCharacterToCamera = true,
+		-- [v2.9] Dash lateral (A / D) CIRCULAR: la dirección sigue al yaw de la cámara durante todo el dash. Con lock-on
+		-- (la cámara apunta al objetivo) el dash lateral rodea al rival hasta quedar detrás de él.
+		CircularSideDash = true,
 	},
 
-	AllowInAir = false,
+	AllowInAir = true, -- [v2.3] el dash también se puede hacer en el aire (el eje Y queda libre)
 	BlockInUIMode = true,
 
 	Physics = {

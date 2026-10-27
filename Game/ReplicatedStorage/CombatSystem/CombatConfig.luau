@@ -47,7 +47,12 @@ CombatConfig.Animations = {
 	M1_2 = "",   -- PENDIENTE
 	M1_3 = "",   -- PENDIENTE
 	M1_4 = "",   -- PENDIENTE
-	M1_5 = "",   -- PENDIENTE (golpe final, más pesado)
+	-- [v2.3] El combo ahora es de 4 golpes: M1_4 es el golpe final (el que empuja lejos).
+	Uppercut = "",  -- PENDIENTE
+	AirSlam = "",   -- PENDIENTE (4º básico en el aire: estampa al rival)
+	CounterM1 = "", -- PENDIENTE (M1 de contraataque tras bloquear el AirSlam)
+	RunAttack = "", -- PENDIENTE (ataque corriendo)
+	AirGrab = "",   -- PENDIENTE (agarre en el aire de 2 s)
 	DummyM1 = "",-- PENDIENTE (puede repetir el de M1_1)
 	Heavy = "",  -- PENDIENTE
 	Stun = "",   -- PENDIENTE
@@ -78,18 +83,61 @@ CombatConfig.Attacks = {
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 	},
+	-- [v2.3] Golpe final del combo (antes M1_5): empuja LEJOS y aturde un poco (HitReaction).
 	M1_4 = {
-		Label = "M1", Damage = 11, Windup = 0.18, Active = 0.12, Recovery = 0.26,
-		Box = { Size = Vector3.new(6, 5, 5.5), Forward = 0.5, VerticalOffset = 0 },
-		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
-		MovementProfile = "Light",
-	},
-	M1_5 = {
-		Label = "M1", Damage = 20, Windup = 0.32, Active = 0.18, Recovery = 0.55,
+		Label = "M1", Damage = 18, Windup = 0.28, Active = 0.16, Recovery = 0.35, -- [v2.10] Recovery 0.5 -> 0.35
 		Box = { Size = Vector3.new(7, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 		Finisher = true,
+		HitReaction = { Stun = 0.7, Knockback = 16, KnockbackTime = 0.35, ParryChance = false },
+	},
+	-- [v2.3] Uppercut: es el 4º golpe si se mantiene Espacio (CombatConfig.Uppercut.Key). Si conecta, atacante y rival
+	-- suben juntos; el 4º básico aéreo es AirSlam. Ver CombatConfig.Uppercut.
+	Uppercut = {
+		-- [v2.8] Recovery 0.12 -> 0.45: el primer golpe aéreo no sale pegado a la subida (más tiempo para acomodarse).
+		Label = "UPPERCUT", Damage = 6, Windup = 0.22, Active = 0.12, Recovery = 0.45,
+		Box = { Size = Vector3.new(6, 6, 6), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+		Launcher = true,
+	},
+	-- [v2.4] 4º golpe del combo AÉREO (reemplaza a M1_4 mientras dura el Uppercut). Si conecta, estampa al rival contra el
+	-- suelo y lo deja aturdido (pero con dash). Caja alta: los dos están en el aire a alturas parecidas.
+	AirSlam = {
+		Label = "SLAM", Damage = 18, Windup = 0.28, Active = 0.16, Recovery = 0.45,
+		Box = { Size = Vector3.new(8, 12, 8), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+		AirSlam = true,
+		Finisher = true,
+	},
+	-- Contraataque: el M1 que pega el que bloqueó el AirSlam (misma consecuencia: estampa y aturde con dash).
+	CounterM1 = {
+		Label = "COUNTER", Damage = 12, Windup = 0.1, Active = 0.16, Recovery = 0.3,
+		Box = { Size = Vector3.new(8, 12, 8), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Light",
+		CounterSlam = true,
+		Finisher = true,
+	},
+	-- [v2.5] R en el aire (durante el combo aéreo): AGARRE. No se bloquea ni se parrea. Conecta con la caja y el rival queda
+	-- sujeto GrabDuration segundos delante tuyo; luego lo tirás lejos (CombatConfig.Uppercut). Comparte el cooldown de la R.
+	AirGrab = {
+		Label = "GRAB", Damage = 15, Windup = 0.15, Active = 0.12, Recovery = 0.25,
+		PlayerCooldown = 20, CooldownKey = "Heavy",
+		Box = { Size = Vector3.new(8, 12, 8), Forward = 0.5, VerticalOffset = 0 },
+		CanBeBlocked = false, CanBeParried = false, BreaksGuard = false,
+		MovementProfile = "Grab", -- [v2.8] el atacante no se mueve durante el agarre
+		Grab = true,
+	},
+	-- Ataque corriendo (W + Shift + M1). Perfil de movimiento "Run": no pierde velocidad. Cooldown solo contra spam.
+	RunAttack = {
+		Label = "RUN", Damage = 12, Windup = 0.1, Active = 0.16, Recovery = 0.3, Cooldown = 1,
+		Box = { Size = Vector3.new(6, 5.5, 9), Forward = 1, VerticalOffset = 0 },
+		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
+		MovementProfile = "Run",
+		HitReaction = { Stun = 0.5, Knockback = 8, KnockbackTime = 0.25, ParryChance = false },
 	},
 	-- Ataque básico de BasicAttackerDummy: anticipación larga para aprender el timing.
 	DummyM1 = {
@@ -114,11 +162,14 @@ CombatConfig.Attacks = {
 	--   [v2] PlayerCooldown: cooldown REAL para jugadores (20 s). Lo aplica y lo sincroniza el servidor.
 	--   [v2] ContinuesCombo: usada dentro de un combo no lo reinicia; reabre la ventana para seguir con M1.
 	Heavy = {
-		Label = "GUARD BREAK", Damage = 25, Windup = 0.55, Active = 0.2, Recovery = 0.7, Cooldown = 3,
+		-- [v2.5] La R dura 1 s en total: Windup 0.55 (el casteo original) + Active 0.15 + Recovery 0.3 (antes 1.45 s).
+		-- Sigue sin poder bloquearse (rompe la guardia), pero SÍ se puede parrear (CanBeParried) y esquivar con el dash.
+		-- En el aire, durante un combo aéreo, la R es el agarre AirGrab (ver CombatConfig.Uppercut).
+		Label = "GUARD BREAK", Damage = 25, Windup = 0.55, Active = 0.15, Recovery = 0.3, Cooldown = 3,
 		PlayerCooldown = 20,
 		ContinuesCombo = true,
 		Box = { Size = Vector3.new(6, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
-		CanBeBlocked = false, CanBeParried = false, BreaksGuard = true,
+		CanBeBlocked = false, CanBeParried = true, BreaksGuard = true,
 		MovementProfile = "Heavy",
 	},
 }
@@ -128,10 +179,13 @@ CombatConfig.Attacks = {
 --   BufferTime: un clic hecho durante Active/Recovery se recuerda este tiempo.
 --   EndCooldown: pausa tras el golpe final antes de poder iniciar otro combo.
 CombatConfig.Combo = {
-	Sequence = { "M1_1", "M1_2", "M1_3", "M1_4", "M1_5" },
+	Sequence = { "M1_1", "M1_2", "M1_3", "M1_4" }, -- [v2.3] antes 5 golpes
 	Window = 0.55,
 	BufferTime = 0.35,
-	EndCooldown = 0.6,
+	EndCooldown = 0.25, -- [v2.10] antes 0.6: tras el 4º golpe se puede seguir casi enseguida (p. ej. dash + M1)
+	-- [v2.10] Dash durante el combo (en la ventana o en la recuperación de un M1): NO lo rompe, y la ventana se extiende
+	-- DashWindow segundos para poder seguir con el siguiente M1 después del dash.
+	DashWindow = 1.0,
 }
 
 -- Movilidad durante acciones (solo se aplica al jugador local, desde MovementController).
@@ -149,6 +203,20 @@ CombatConfig.Movement = {
 			Active = { MaxSpeed = 13, Forward = 1, Lateral = 0.9, Backward = 0.7 },
 			Recovery = { MaxSpeed = 15, Forward = 1, Lateral = 1, Backward = 0.85 },
 			ComboWindow = { MaxSpeed = 18, Forward = 1, Lateral = 1, Backward = 1 },
+		},
+		-- [v2.5] Ataque corriendo: penalización MUY pequeña (sprint 24 -> 23 / 21 / 22 studs/s).
+		Run = {
+			Windup = { MaxSpeed = 23, Forward = 1, Lateral = 1, Backward = 1 },
+			Active = { MaxSpeed = 21, Forward = 1, Lateral = 1, Backward = 1 },
+			Recovery = { MaxSpeed = 22, Forward = 1, Lateral = 1, Backward = 1 },
+			ComboWindow = { MaxSpeed = 22, Forward = 1, Lateral = 1, Backward = 1 },
+		},
+		-- [v2.8] Agarre: el atacante queda totalmente quieto (el agarrado ya está en Stunned).
+		Grab = {
+			Windup = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
+			Active = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
+			Recovery = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
+			ComboWindow = { MaxSpeed = 0, Forward = 0, Lateral = 0, Backward = 0 },
 		},
 		Heavy = {
 			Windup = { MaxSpeed = 5, Forward = 0.8, Lateral = 0.4, Backward = 0.3 },
@@ -174,6 +242,11 @@ CombatConfig.Movement = {
 	--   MaxSpeed es un tope ABSOLUTO: el sprint no lo anula. AllowJump = true conserva el salto
 	--   (antes de este cambio se podía saltar bloqueando).
 	-- [v2.1] Menos penalización (v2: Block 9 / Parry 6). Block ~75% de caminar, Parry ~62%.
+	-- [v2.7] Combo aéreo (el atacante; servidor: atributo CombatAirCombo): movimiento muy penalizado para que el rival
+	-- siempre quede delante tuyo.
+	-- [v2.10] MaxSpeed 5 -> 18: se avanza con W detrás del rival (cada M1 lo empuja un poco hacia atrás).
+	AirCombo = { MaxSpeed = 18, Forward = 1, Lateral = 1, Backward = 1, AllowJump = true },
+
 	-- [v2.2] Frenada progresiva: al entrar en una fase con tope MÁS BAJO que tu velocidad (p. ej. sprint 24 -> M1 15),
 	-- el tope baja a este ritmo (studs/s por segundo) en vez de cortar de golpe. Stun y dash siguen siendo inmediatos.
 	SlowdownRate = 45,
@@ -188,6 +261,23 @@ CombatConfig.Block = {
 	ParryWindow = 0.25,
 	ParryCooldown = 0.8,
 	GuardBreakStun = 1.5, -- tiempo sin poder bloquear tras un guard break (no es el stun por parry)
+
+	-- [v2.10] Bloquear y parrear solo funciona contra ataques que vienen de FRENTE: si el atacante está a más de
+	-- FrontHalfAngle grados de hacia donde mira el defensor (es decir, de espaldas), el golpe conecta (y arranca el combo).
+	FrontHalfAngle = 100,
+
+	-- [v2.4] Barra de bloqueo: se puede mantener F SIN LÍMITE de tiempo (DrainPerSecond = 0); la barra baja de a poco
+	-- SOLO al bloquear golpes: cada golpe bloqueado le quita HitCost ([v2.5] 10 = aguanta 10 golpes).
+	-- Al llegar a 0 la guardia se ROMPE: el jugador queda aturdido igual que el atacante al que le hacen parry
+	-- (CombatConfig.Stun.OnParried), no se puede volver a bloquear durante DepletedCooldown (2 s) y después la barra vuelve llena. Si no se está bloqueando se recarga (tras RegenDelay). El parry NO usa la barra. Solo jugadores.
+	Meter = {
+		Max = 100,
+		DrainPerSecond = 0, -- >0 haría que también baje con el tiempo
+		HitCost = 10, -- por golpe bloqueado (10 golpes la vacían)
+		RegenPerSecond = 35,
+		RegenDelay = 1.0,
+		DepletedCooldown = 2,
+	},
 }
 
 -- Stun por parry.
@@ -209,18 +299,103 @@ CombatConfig.Stun = {
 --   recibido (esa chance no depende del cooldown del parry). Si falla, el siguiente M1 vuelve a conectar.
 --   La duración cubre hasta que llega el siguiente golpe del combo: Active + Recovery + Windup siguiente + StunSlack.
 --   Un parry exitoso libera al objetivo al instante (y aturde al atacante, como siempre).
---   Con el M1 final (M1_5) no hay chance de parry: solo FinisherStun segundos de hitstun.
+--   [v2.3] Un ataque puede traer su propia HitReaction = { Stun, Knockback, KnockbackTime, ParryChance } (M1_4, RunAttack):
+--   entonces se usa esa en vez de la del combo.
 --   Knockback: el objetivo es empujado en la dirección a la que mira el atacante (para el atacante es "hacia adelante";
 --   para quien recibe es hacia atrás). Lo aplica el cliente del objetivo (ver MovementController.ApplyKnockback).
 CombatConfig.HitReaction = {
 	Enabled = true,
 	StunSlack = 0.1,
-	FinisherStun = 0.5,
 	Knockback = {
 		Distance = 2.5,
-		FinisherDistance = 6,
 		Duration = 0.18,
 	},
+}
+
+-- [v2.4] Uppercut y combo aéreo (solo contra jugadores).
+--   1) Se mantiene Key (Espacio) durante un combo de M1. Al llegar al 4º golpe, ese golpe es el UPPERCUT en vez de M1_4.
+--   2) Si el Uppercut conecta (no bloqueado / parryado / esquivado), los DOS suben (LaunchSpeed, durante RiseTime) y se
+--      quedan FLOTANDO. El rival solo puede bloquear o parrear (no atacar, no dash, no moverse). El atacante lanza un
+--      combo NUEVO de 4 golpes: M1_1, M1_2, M1_3 normales y el 4º es el AirSlam.
+--   3) AirSlam sin bloqueo ni parry: estampa al rival contra el suelo y lo aturde SlamStun, pero puede hacer dash.
+--   4) Si el rival bloqueó los golpes (la barra de bloqueo es la que lo limita), al recibir el AirSlam bloqueado tiene
+--      CounterWindow segundos para pegar UN M1 (CounterM1): estampa al atacante igual que el AirSlam (stun con dash).
+--   5) Parry en cualquier golpe aéreo: caen los dos y el atacante queda aturdido ParriedStun (el otro empieza combo).
+--   AirWindow: duración máxima; AirIdle: si el atacante deja de pegar ese tiempo, caen los dos.
+CombatConfig.Uppercut = {
+	Enabled = true,
+	Key = Enum.KeyCode.Space,
+	LaunchSpeed = 70,
+	RiseTime = 0.3,
+	AirWindow = 6,
+	-- [v2.8] El combo aéreo NO obliga a pegar: AirIdle = 0 desactiva la caída por inactividad. En cambio, si el atacante
+	-- lleva BreakIdle segundos sin atacar, el rival lanzado puede apretar M1 y caen los dos.
+	AirIdle = 0,
+	-- [v2.10] En el combo aéreo no se queda uno quieto: el atacante avanza con W (Movement.AirCombo) y cada M1 que conecta
+	-- empuja al rival AirPush studs hacia atrás (AirPushTime segundos).
+	AirPush = 5,
+	AirPushTime = 0.2,
+	BreakIdle = 0.9,
+	-- [v2.8] Los M1 del combo aéreo (y el AirSlam) tienen la anticipación multiplicada: menos veloces, más fáciles de leer.
+	AirWindupScale = 1.4,
+	SlamSpeed = 110,
+	-- [v2.5] El 4º golpe aéreo (AirSlam y su contraataque) manda LEJOS al rival, lo estampa y lo aturde SlamStun segundos,
+	-- salvo que haga dash (el dash corta el stun).
+	-- [v2.10] SlamStun = stun EN EL PISO tras caer (se cuenta desde que aterriza); SlamAirMax = tope mientras vuela.
+	-- Aplica al 4º golpe aéreo, al contraataque y al lanzamiento del agarre. El dash corta el stun.
+	SlamStun = 1.5,
+	SlamAirMax = 3,
+	SlamKnockback = 22,
+	SlamKnockbackTime = 0.5,
+	CounterWindow = 1.0,
+	ParriedStun = 1.8,
+	-- [v2.5] R en el aire = agarre: el rival queda sujeto GrabDuration s delante tuyo y luego sale despedido GrabThrowDistance.
+	GrabDuration = 2,
+	GrabOffset = Vector3.new(0, 0, -3.6),
+	GrabThrowDistance = 36,
+	GrabThrowTime = 0.6,
+	GrabThrowStun = 1.0,
+}
+
+-- [v2.3] Ataque corriendo: W + sprint + M1. El cliente pide "RunAttack"; el servidor comprueba que de verdad vayas
+-- rápido hacia adelante (velocidad horizontal real >= MinSpeed y dirección alineada con hacia donde mirás) y, si no, lo
+-- trata como un M1 normal.
+-- [v2.5] Se habilita apenas ganás un poco de velocidad con Shift (MinSpeed > WalkSpeed 16). Casi no frena (ver perfil Run);
+-- se puede repetir cada Attacks.RunAttack.Cooldown segundos mientras sigas corriendo. ServerMinSpeed es la tolerancia del
+-- servidor por la latencia de la velocidad replicada.
+CombatConfig.RunAttack = {
+	Enabled = true,
+	MinSpeed = 16.5,
+	ServerMinSpeed = 15.5,
+	MinForwardDot = 0.6,
+}
+
+
+-- [v2.9] Finta: durante la anticipación (Windup) de un M1 del combo, el clic derecho cancela el golpe. El rival vio la
+-- animación y quizá gastó su parry (que queda en cooldown); tu combo conserva su progreso, así que el siguiente M1 sigue
+-- donde ibas. Cooldown contra el abuso.
+CombatConfig.Feint = {
+	Enabled = true,
+	Cooldown = 2.0,
+}
+
+-- [v2.3] Salto: cooldown (cliente, igual que el resto del movimiento).
+CombatConfig.Jump = {
+	Cooldown = 1.5,
+	-- [v2.4] Tras cualquier fase de combate (M1, R, ataque corriendo...) no se puede saltar durante este tiempo: así
+	-- mantener Espacio para el Uppercut no hace saltar al atacante al empezar / terminar la ventana del combo.
+	LockAfterCombat = 0.5,
+}
+
+-- [v2.7] Ayuda del combo AÉREO (en el suelo no hay): el servidor avisa al atacante del rival atrapado, y su personaje
+-- gira hacia él durante todo el combo y da un paso corto hacia él en cada golpe (hasta MaxStep studs, quedando a
+-- StopDistance). Además el movimiento del atacante queda muy penalizado (Movement.AirCombo).
+CombatConfig.Assist = {
+	Enabled = true,
+	StopDistance = 4.6, -- [v2.8] antes 3.4: un poco más de distancia al rival
+	MaxStep = 0, -- [v2.10] sin paso automático: el atacante avanza solo con W
+	StepTime = 0.15,
+	TurnSharpness = 24,
 }
 
 CombatConfig.Rules = {
@@ -324,6 +499,11 @@ CombatConfig.DummyDefaults = {
 
 CombatConfig.Dummies = {
 	InfiniteHealthDummy = { Role = "Training", InfiniteHealth = true },
+	-- [v2.7] Dummy para probar combos: vida infinita, no ataca ni bloquea y es MÓVIL (Movable): no está anclado y el
+	-- servidor le aplica el empuje del 4º golpe, el Uppercut con combo aéreo, el estampado y el agarre (DummyPhysics).
+	-- Vuelve solo a su lugar 3 s después del último efecto. Crear el modelo "ComboDummy" en Workspace.CombatDummies
+	-- (duplicando InfiniteHealthDummy, rig R6).
+	ComboDummy = { Role = "Training", InfiniteHealth = true, Movable = true },
 	BasicAttackerDummy = {
 		Role = "BasicAttacker",
 		AutoAttack = { Attack = "DummyM1", Interval = 2.5 },
@@ -356,6 +536,27 @@ CombatConfig.CooldownHUD = {
 		{ Id = "Dash", Name = "DASH" },
 		{ Id = "Heavy", Name = "GUARD BREAK" },
 		{ Id = "Parry", Name = "PARRY" },
+		{ Id = "Jump", Name = "SALTO" }, -- [v2.3]
+	},
+	-- [v2.8] Contador de golpes: un círculo por M1 del combo en el borde derecho; el último (el 4º básico / Uppercut /
+	-- AirSlam) es más grande. En el combo aéreo usa AirColor. Lo alimenta el servidor (ComboCount / ComboAir /
+	-- ComboCountUntil en el Player).
+	ComboCounter = {
+		CircleSize = 16,
+		LastCircleSize = 28,
+		Gap = 10,
+		EdgeOffset = 22,
+		LitColor = Color3.fromRGB(255, 225, 90),
+		AirColor = Color3.fromRGB(110, 220, 255),
+		UnlitColor = Color3.fromRGB(40, 44, 54),
+	},
+	-- [v2.3] Barra de bloqueo (se ve cuando no está llena o está en cooldown)
+	BlockBar = {
+		Width = 230,
+		Height = 12,
+		Gap = 8,
+		FullColor = Color3.fromRGB(110, 200, 255),
+		LowColor = Color3.fromRGB(255, 120, 90),
 	},
 }
 

@@ -12,6 +12,9 @@
 	El tiempo restante se calcula con Workspace:GetServerTimeNow(), el mismo reloj que usan los telegraphs, así que
 	no hay cuentas regresivas propias que se desincronicen.
 
+	[v2.3] Salto: cooldown local (MovementController.GetJumpCooldownRemaining) y barra de bloqueo (atributos del Player
+	BlockMeter / BlockMeterRate / BlockMeterTime / BlockLockedUntil publicados por CombatService).
+
 	Dash: además del servidor se usa la predicción local de DashController (deps.getDashCooldownRemaining) y se muestra
 	el MAYOR de los dos. Así el HUD reacciona en el mismo fotograma de la pulsación (sin esperar al ping) y nunca
 	muestra "listo" cuando el cliente todavía no te dejaría hacer dash.
@@ -19,6 +22,7 @@
 	deps = {
 		keys = { Dash = Enum.KeyCode, Heavy = Enum.KeyCode, Parry = Enum.KeyCode },
 		getDashCooldownRemaining = function() -> number,   (opcional)
+		getJumpCooldownRemaining = function() -> number,   (opcional)
 	}
 
 	API: Start(deps), NotifyPress(id), IsReady(id), Destroy()
@@ -47,6 +51,8 @@ local updateConnection: RBXScriptConnection? = nil
 local slots: { [string]: any } = {}
 local slotList: { any } = {}
 local deps: any = nil
+local blockBar: any = nil -- [v2.3]
+local comboWidget: any = nil -- [v2.8]
 
 ---------------------------------------------------------------------
 -- Lectura del estado (atributos del Player publicados por el servidor)
@@ -102,6 +108,12 @@ local providers = {
 
 	Parry = function(now: number): (number, number, number?)
 		return remainingFromAttribute("CooldownEnd_Parry", now), CombatConfig.Block.ParryCooldown, nil
+	end,
+
+	-- [v2.3] El cooldown del salto es local (cliente), no hay atributo del servidor.
+	Jump = function(_now: number): (number, number, number?)
+		local remaining = if deps and deps.getJumpCooldownRemaining then deps.getJumpCooldownRemaining() else 0
+		return remaining, CombatConfig.Jump.Cooldown, nil
 	end,
 }
 
@@ -299,11 +311,93 @@ local function updateSlot(slot, now: number)
 	end
 end
 
+-- [v2.3] Barra de bloqueo: se extrapola con el ritmo (+recarga / -gasto) que publica el servidor.
+local function updateBlockBar(now: number)
+	if not blockBar then
+		return
+	end
+	local meter = CombatConfig.Block.Meter
+	local barCfg = cfg.BlockBar
+
+	local value = player:GetAttribute("BlockMeter")
+	local rate = player:GetAttribute("BlockMeterRate")
+	local t0 = player:GetAttribute("BlockMeterTime")
+	local lockedUntil = player:GetAttribute("BlockLockedUntil")
+	value = if typeof(value) == "number" then value else meter.Max
+	rate = if typeof(rate) == "number" then rate else 0
+	t0 = if typeof(t0) == "number" then t0 else now
+	lockedUntil = if typeof(lockedUntil) == "number" then lockedUntil else 0
+
+	local current = math.clamp(value + rate * (now - t0), 0, meter.Max)
+	local lockedRemaining = math.max(lockedUntil - now, 0)
+
+	local show = lockedRemaining > 0 or current < meter.Max - 0.5
+	blockBar.frame.Visible = show
+	if not show then
+		return
+	end
+
+	if lockedRemaining > 0 then
+		-- Bloqueo agotado: la barra se "llena" con el tiempo que falta para poder bloquear de nuevo.
+		local progress = 1 - math.clamp(lockedRemaining / math.max(meter.DepletedCooldown, 0.01), 0, 1)
+		blockBar.fill.Size = UDim2.fromScale(progress, 1)
+		blockBar.fill.BackgroundColor3 = barCfg.LowColor
+		blockBar.label.Text = string.format("BLOQUEO %.1f", lockedRemaining)
+	else
+		local fraction = current / meter.Max
+		blockBar.fill.Size = UDim2.fromScale(fraction, 1)
+		blockBar.fill.BackgroundColor3 = barCfg.LowColor:Lerp(barCfg.FullColor, fraction)
+		blockBar.label.Text = "BLOQUEO"
+	end
+end
+
+-- [v2.8] Contador de golpes: círculos en el borde derecho; el último (4º básico / Uppercut / AirSlam) es más grande.
+local function updateComboCounter(now: number)
+	if not comboWidget then
+		return
+	end
+	local counterCfg = cfg.ComboCounter
+
+	local count = player:GetAttribute("ComboCount")
+	local untilTime = player:GetAttribute("ComboCountUntil")
+	local isAir = player:GetAttribute("ComboAir") == true
+	count = if typeof(count) == "number" then count else 0
+	untilTime = if typeof(untilTime) == "number" then untilTime else 0
+
+	local visible = count > 0 and now < untilTime
+	comboWidget.frame.Visible = visible
+	if not visible then
+		comboWidget.lastCount = 0
+		return
+	end
+
+	local litColor = if isAir then counterCfg.AirColor else counterCfg.LitColor
+	for index, circle in ipairs(comboWidget.circles) do
+		local lit = index <= count
+		circle.frame.BackgroundColor3 = if lit then litColor else counterCfg.UnlitColor
+		circle.frame.BackgroundTransparency = if lit then 0 else 0.35
+		circle.stroke.Color = litColor
+		circle.stroke.Transparency = if lit then 0 else 0.5
+	end
+
+	-- Pequeño "pop" en el círculo que se acaba de encender
+	if count ~= comboWidget.lastCount then
+		local circle = comboWidget.circles[count]
+		if circle then
+			circle.scale.Scale = 1.5
+			TweenService:Create(circle.scale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+		end
+		comboWidget.lastCount = count
+	end
+end
+
 local function onRenderStepped()
 	local now = workspace:GetServerTimeNow()
 	for _, slot in slotList do
 		updateSlot(slot, now)
 	end
+	updateBlockBar(now)
+	updateComboCounter(now)
 end
 
 ---------------------------------------------------------------------
@@ -369,6 +463,81 @@ function CooldownHUD.Start(newDeps: any)
 		end
 	end
 
+	-- [v2.3] Barra de bloqueo, encima de las casillas
+	local barCfg = cfg.BlockBar
+	local barFrame = Instance.new("Frame")
+	barFrame.Name = "BlockBar"
+	barFrame.AnchorPoint = Vector2.new(0.5, 1)
+	barFrame.Position = UDim2.new(0.5, 0, 1, -(cfg.BottomOffset + cfg.SlotSize + barCfg.Gap))
+	barFrame.Size = UDim2.fromOffset(barCfg.Width, barCfg.Height)
+	barFrame.BackgroundColor3 = cfg.BackgroundColor
+	barFrame.BackgroundTransparency = 0.25
+	barFrame.BorderSizePixel = 0
+	barFrame.Visible = false
+	barFrame.ClipsDescendants = true
+	barFrame.Parent = screenGui
+	addCorner(barFrame, 6)
+
+	local barFill = Instance.new("Frame")
+	barFill.Name = "Fill"
+	barFill.Size = UDim2.fromScale(1, 1)
+	barFill.BackgroundColor3 = barCfg.FullColor
+	barFill.BorderSizePixel = 0
+	barFill.Parent = barFrame
+
+	local barLabel = makeLabel(barFrame, "Label", UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), 10, 2)
+	barLabel.Font = Enum.Font.GothamBold
+	barLabel.Text = "BLOQUEO"
+	blockBar = { frame = barFrame, fill = barFill, label = barLabel }
+
+	-- [v2.8] Contador de golpes (borde derecho, centrado en vertical)
+	local counterCfg = cfg.ComboCounter
+	local comboCount = #CombatConfig.Combo.Sequence
+	local comboFrame = Instance.new("Frame")
+	comboFrame.Name = "ComboCounter"
+	comboFrame.AnchorPoint = Vector2.new(1, 0.5)
+	comboFrame.Position = UDim2.new(1, -counterCfg.EdgeOffset, 0.5, 0)
+	comboFrame.Size = UDim2.fromOffset(counterCfg.LastCircleSize, 0)
+	comboFrame.AutomaticSize = Enum.AutomaticSize.Y
+	comboFrame.BackgroundTransparency = 1
+	comboFrame.Visible = false
+	comboFrame.Parent = screenGui
+
+	local comboLayout = Instance.new("UIListLayout")
+	comboLayout.FillDirection = Enum.FillDirection.Vertical
+	comboLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	comboLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	comboLayout.Padding = UDim.new(0, counterCfg.Gap)
+	comboLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	comboLayout.Parent = comboFrame
+
+	local circles = {}
+	for index = 1, comboCount do
+		local size = if index == comboCount then counterCfg.LastCircleSize else counterCfg.CircleSize
+		local circle = Instance.new("Frame")
+		circle.Name = "Circle" .. index
+		circle.LayoutOrder = index
+		circle.Size = UDim2.fromOffset(size, size)
+		circle.AnchorPoint = Vector2.new(0.5, 0.5)
+		circle.BackgroundColor3 = counterCfg.UnlitColor
+		circle.BorderSizePixel = 0
+		circle.Parent = comboFrame
+		addCorner(circle, size) -- radio >= mitad = círculo
+
+		local circleStroke = Instance.new("UIStroke")
+		circleStroke.Thickness = 2
+		circleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		circleStroke.Color = counterCfg.LitColor
+		circleStroke.Parent = circle
+
+		local circleScale = Instance.new("UIScale")
+		circleScale.Scale = 1
+		circleScale.Parent = circle
+
+		circles[index] = { frame = circle, stroke = circleStroke, scale = circleScale }
+	end
+	comboWidget = { frame = comboFrame, circles = circles, lastCount = 0 }
+
 	screenGui.Parent = playerGui
 	gui = screenGui
 
@@ -391,6 +560,8 @@ function CooldownHUD.Destroy()
 	end
 	table.clear(slots)
 	table.clear(slotList)
+	blockBar = nil
+	comboWidget = nil
 	deps = nil
 end
 

@@ -1,16 +1,11 @@
-print("[RibbonPhysicsClient] script iniciado")
-
 --[[
-	RibbonPhysicsClient (LocalScript)  -  multi-espada
+	RibbonPhysicsClient (LocalScript)  -  versión limpia
 	UBICACIÓN: StarterPlayer > StarterPlayerScripts > RibbonPhysicsClient
-	Requiere el ModuleScript "RibbonPhysics" (v3.x) en ReplicatedStorage.
+	Requiere el ModuleScript "RibbonPhysics" (v4) en ReplicatedStorage.
 
 	Aplica la simulación a TODOS los modelos de Workspace cuyo nombre coincida
 	con SWORD_PATTERN (también a los que se añadan después). Cada espada tiene su
 	propia simulación independiente.
-
-	Todas las espadas deben tener la misma estructura que la original:
-	RootPart, Ribbon (con huesos), Shape, Base...
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -31,74 +26,58 @@ local GRIP_OFFSET = CFrame.new(0, -0.2, 0) * CFrame.Angles(90, 90, 0)
 local player = Players.LocalPlayer
 
 --------------------------------------------------------------------------------
--- CONFIGURACIÓN DE LA FÍSICA (compartida por todas las espadas)
+-- CONFIGURACIÓN (compartida por todas las espadas)
+-- Los parámetros { Near, Tip } van del primer hueso libre a la punta.
 --------------------------------------------------------------------------------
 local CONFIG = {
-	Debug = true,
-	DebugDraw = false, -- true: esferas rojas (huesos fijos) y cian (libres) + cajas de colisión
-	DebugStats = true, -- desvío máximo respecto al reposo (solo de la espada equipada)
-
-	Names = {
-		Ribbon = "Ribbon",
-		RootPart = "RootPart",
-		Colliders = { "Shape", "Base" },
-	},
+	Debug = false, -- true = imprime en Output qué detecta (huesos, suelo...)
 
 	Simulation = {
 		TeleportDistance = 30,
-		MaxSpeed = 80,
+		MaxSpeed = 45, -- velocidad máx. de las partículas (studs/s)
 		InputSmoothing = 0.04,
 	},
 
 	Chain = {
-		StartBone = "Bone.005", -- este hueso y los anteriores NO se simulan
+		StartBone = "Bone.004", -- PRIMER hueso que gira; los anteriores quedan fijos
 	},
 
-	-- { Near, Tip }: del primer hueso libre a la punta
 	Physics = {
-		Curve = 1.5,
-		Elasticity = { Near = 100, Tip = 14 },
-		Damping = { Near = 12, Tip = 6 },
-		AirDrag = { Near = 0.3, Tip = 1.5 },
-		Stiffness = { Near = 0.95, Tip = 0.3 },
-		Follow = { Near = 1, Tip = 0.1 },
-		Gravity = Vector3.zero,
+		Elasticity = { Near = 70, Tip = 5 }, -- fuerza que devuelve la cinta a su forma
+		Damping = { Near = 12, Tip = 6 }, -- pérdida de energía
+		AirDrag = { Near = 1, Tip = 3 }, -- retraso al moverte (D, A, W, S...) y empuje del viento
+		Stiffness = { Near = 0.85, Tip = 0.1 }, -- límite angular por segmento
+		Follow = { Near = 1, Tip = 0.05 }, -- 1 = sigue a la espada; 0 = se queda atrás por inercia
+		ConstraintDamping = 0.5,
+		MaxRise = 0.5, -- máx. que sube la cinta sobre StartBone (studs)
 	},
 
 	Wind = {
 		Enabled = true,
-		Strength = 6,
-		Speed = 0.5,
+		Strength = 9, -- más = más viento
+		Speed = 0.35, -- rapidez de las ráfagas
 		SpatialPhase = 0.06,
-		Space = "World",
 		AxisMask = Vector3.new(1, 0, 1),
-		Steady = Vector3.zero,
-	},
-
-	Collision = {
-		Enabled = false,
-		Radius = 0.12,
-		IgnoreFirstParticles = 3,
-		MidpointSamples = 1,
-		Softness = 0.75,
-		ContactDamping = 0.5,
-		RestMargin = 0.15,
 	},
 
 	Ground = {
 		Enabled = true,
-		Radius = 0.15,
+		Radius = 0.2, -- distancia mínima de la cinta al suelo
 		Lift = 1.5,
 		SearchDepth = 40,
 		CheckHeight = 8,
-		Friction = 8,
+		Friction = 5, -- más = se arrastra menos
+		StaticSpeed = 0.5,
 	},
 
 	Bones = {
-		MaxBendAngle = 70,
-		ResponseGain = 1,
-		SmoothingRate = 25,
-		SpatialSmoothing = 1,
+		MaxBendAngle = 90,
+		TipMaxBendAngle = 40,
+		SmoothingRate = 18,
+		TipSmoothingRate = 12,
+		TipSmoothCount = 6,
+		SpatialSmoothing = 2,
+		MaxAngularSpeed = 400,
 	},
 }
 
@@ -149,6 +128,7 @@ end
 -- UNA SIMULACIÓN POR ESPADA
 --------------------------------------------------------------------------------
 local started = {} -- [modelo] = true
+local swordModels = {} -- todas las espadas: no cuentan como suelo para la cinta de las demás
 local sims = {} -- [modelo] = simulación
 
 local function isEquipped(sword)
@@ -160,9 +140,9 @@ local function setupSword(sword)
 		return
 	end
 	started[sword] = true
+	table.insert(swordModels, sword)
 
 	task.spawn(function()
-		-- Espera a que lleguen las piezas (importante si hay StreamingEnabled)
 		local rootPart = sword:WaitForChild("RootPart", 30)
 		local ribbonPart = sword:WaitForChild("Ribbon", 30)
 		if not rootPart or not ribbonPart then
@@ -175,14 +155,16 @@ local function setupSword(sword)
 			equipSword(sword, player.Character or player.CharacterAdded:Wait())
 		end
 
-		-- Copia superficial de la config: solo la espada equipada imprime estadísticas
 		local cfg = table.clone(CONFIG)
-		cfg.DebugStats = CONFIG.DebugStats and (isEquipped(sword) or not EQUIP_TEST)
+		cfg.Ground = table.clone(CONFIG.Ground)
+		cfg.Ground.Ignore = swordModels
 
 		local sim = RibbonPhysics.new(sword, cfg)
 		if sim.ok then
 			sims[sword] = sim
-			print("[RibbonPhysicsClient] Simulación activa en '" .. sword.Name .. "'")
+			if CONFIG.Debug then
+				print("[RibbonPhysicsClient] Simulación activa en '" .. sword.Name .. "'")
+			end
 		else
 			warn("[RibbonPhysicsClient] '" .. sword.Name .. "': la simulación no pudo iniciarse. Revisa los avisos anteriores.")
 		end
@@ -225,4 +207,4 @@ player.CharacterAdded:Connect(function(character)
 			sim:Reset()
 		end
 	end
-end)
+end)s

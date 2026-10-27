@@ -435,6 +435,19 @@ local function onHeartbeat(dt)
 		return
 	end
 
+	-- [v2.9] Dash lateral circular: la dirección se recalcula cada fotograma con el yaw ACTUAL de la cámara.
+	if cfg.Direction.CircularSideDash and deps.getCameraYaw then
+		local side = if dash.info.DirectionName == "Right" then 1 elseif dash.info.DirectionName == "Left" then -1 else 0
+		if side ~= 0 then
+			local yaw = deps.getCameraYaw()
+			local sinY, cosY = math.sin(yaw), math.cos(yaw)
+			dash.direction = Vector3.new(cosY * side, 0, -sinY * side).Unit
+			if cfg.Direction.AlignCharacterToCamera and deps.orientation then
+				deps.orientation.BeginOverride(yaw) -- el personaje sigue mirando hacia donde mira la cámara
+			end
+		end
+	end
+
 	local tau = t / dash.duration
 	local power = cfg.SpeedDecayPower
 	local speed = dash.baseSpeed * (power + 1) * (1 - tau) ^ power

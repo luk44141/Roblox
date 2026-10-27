@@ -81,6 +81,11 @@ local function getCombatPhase(): string
 		return dashPhase
 	end
 
+	-- [v2.7] Combo aéreo (el atacante): movimiento muy penalizado para que el rival siempre quede delante.
+	if character:GetAttribute("CombatAirCombo") == true then
+		return "AirCombo"
+	end
+
 	if serverPhase == "None" then
 		local defense = character:GetAttribute("CombatDefense")
 		if defense == "Parry" then
@@ -98,6 +103,10 @@ local function canStartDash(): (boolean, string?)
 	if not character then
 		return false, "NoCharacter"
 	end
+	-- [v2.3] Estampado (SlamStun): stun en el que solo se permite el dash (lo marca el servidor).
+	if character:GetAttribute("CombatDashable") == true then
+		return true, nil
+	end
 	if isBlockHeld then
 		return false, "Blocking"
 	end
@@ -105,6 +114,10 @@ local function canStartDash(): (boolean, string?)
 		return false, "Stunned"
 	end
 	local phase = character:GetAttribute("CombatMovePhase") or "None"
+	-- [v2.10] La recuperación de un M1 del combo se puede cancelar con dash (el servidor marca CombatDashCancel).
+	if phase == "Recovery" and character:GetAttribute("CombatDashCancel") == true then
+		return true, nil
+	end
 	if phase ~= "None" and phase ~= "ComboWindow" then
 		return false, "Busy"
 	end
@@ -125,10 +138,26 @@ CameraController.Start({
 	getLockTarget = LockOn.GetCameraTarget,
 })
 
+-- [v2.7] Ayuda del combo aéreo (CombatConfig.Assist): el servidor manda el rival atrapado; se usa a través del mismo
+-- provider del lock-on (el lock-on real siempre manda).
+local assistRoot: BasePart? = nil
+local assistUntil = 0
+
+local function getFacingTarget(): (BasePart?, number?)
+	local lockRoot, lockSharpness = LockOn.GetFacingTarget()
+	if lockRoot then
+		return lockRoot, lockSharpness
+	end
+	if assistRoot and assistRoot.Parent and os.clock() < assistUntil then
+		return assistRoot, CombatConfig.Assist.TurnSharpness
+	end
+	return nil, nil
+end
+
 CharacterOrientation.Start({
 	getCameraYaw = CameraController.GetYaw,
 	isShiftLockActive = CameraController.IsShiftLockActive,
-	getLockTarget = LockOn.GetFacingTarget,
+	getLockTarget = getFacingTarget,
 	getCombatPhase = getCombatPhase,
 })
 
@@ -147,8 +176,9 @@ MovementController.Start({ getPhase = getCombatPhase })
 -- [v2] HUD de cooldowns: lee el estado real publicado por el servidor (atributos del Player). Para el dash también usa
 -- la predicción local (DashController) y muestra el valor más restrictivo: lo que de verdad te dejaría hacer el cliente.
 CooldownHUD.Start({
-	keys = { Dash = DashConfig.Key, Heavy = KEY_HEAVY, Parry = KEY_BLOCK },
+	keys = { Dash = DashConfig.Key, Heavy = KEY_HEAVY, Parry = KEY_BLOCK, Jump = Enum.KeyCode.Space },
 	getDashCooldownRemaining = DashController.GetCooldownRemaining,
+	getJumpCooldownRemaining = MovementController.GetJumpCooldownRemaining,
 })
 
 -- Solo valida el objetivo (ya no escribe la cámara). Antes del paso de cámara (Camera + 1).
@@ -184,12 +214,38 @@ table.insert(
 
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			if not DashController.IsBusy() then
-				requestRemote:FireServer("M1")
+				-- [v2.3] Corriendo hacia adelante (W + sprint, sin acción en curso) = ataque corriendo; el servidor lo
+				-- valida con la velocidad real y, si no cumple, lo trata como M1. Con Espacio mantenido, el 4º golpe es Uppercut.
+				local character = player.Character
+				local phase = if character then (character:GetAttribute("CombatMovePhase") or "None") else "None"
+				-- [v2.4] Basta con Shift + W y haber ganado un poco de velocidad (RunAttack.MinSpeed, apenas sobre caminar).
+				local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+				local planarSpeed = 0
+				if root and root:IsA("BasePart") then
+					local v = root.AssemblyLinearVelocity
+					planarSpeed = math.sqrt(v.X * v.X + v.Z * v.Z)
+				end
+				local running = CombatConfig.RunAttack.Enabled
+					and phase == "None"
+					and not isBlockHeld
+					and SprintController.IsSprintKeyHeld()
+					and UserInputService:IsKeyDown(Enum.KeyCode.W)
+					and planarSpeed >= CombatConfig.RunAttack.MinSpeed
+				if running then
+					requestRemote:FireServer("RunAttack")
+				else
+					requestRemote:FireServer("M1", { Up = UserInputService:IsKeyDown(CombatConfig.Uppercut.Key) })
+				end
+				-- [v2.5] Clic mantenido: el servidor encadena solo los 4 golpes (y el Uppercut si mantenés Espacio)
+				requestRemote:FireServer("M1Hold", true)
 			end
 		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
 			if CombatConfig.LockOn.Enabled then
 				LockOn.Toggle()
 			end
+		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+			-- [v2.9] Finta: clic derecho durante la anticipación de un M1 lo cancela (el servidor valida todo)
+			requestRemote:FireServer("Feint")
 		elseif input.KeyCode == KEY_HEAVY then
 			if not DashController.IsBusy() then
 				CooldownHUD.NotifyPress("Heavy") -- [v2] solo feedback visual si está en cooldown; el servidor decide siempre
@@ -212,6 +268,47 @@ table.insert(
 		end
 	end)
 )
+
+-- [v2.4] Espacio mantenido (Uppercut): el servidor lo necesita aunque el 4º clic se recuerde (buffer) o se apriete antes.
+local upHeldSent = false
+local function setUpHeld(held: boolean)
+	if upHeldSent ~= held then
+		upHeldSent = held
+		requestRemote:FireServer("UpHold", held)
+	end
+end
+
+table.insert(
+	connections,
+	UserInputService.InputBegan:Connect(function(input: InputObject)
+		if input.KeyCode == CombatConfig.Uppercut.Key and UserInputService:GetFocusedTextBox() == nil then
+			setUpHeld(true)
+		end
+	end)
+)
+table.insert(
+	connections,
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.KeyCode == CombatConfig.Uppercut.Key then
+			setUpHeld(false)
+		end
+	end)
+)
+table.insert(connections, UserInputService.WindowFocusReleased:Connect(function()
+	setUpHeld(false)
+end))
+
+table.insert(
+	connections,
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			requestRemote:FireServer("M1Hold", false)
+		end
+	end)
+)
+table.insert(connections, UserInputService.WindowFocusReleased:Connect(function()
+	requestRemote:FireServer("M1Hold", false)
+end))
 
 table.insert(connections, UserInputService.WindowFocusReleased:Connect(releaseBlock))
 table.insert(connections, DashController.Events.RecoveryEnded:Connect(resyncBlock))
@@ -241,6 +338,41 @@ table.insert(
 			DashController.OnServerResponse(payload)
 		elseif kind == "DodgeEvent" then
 			DashController.OnServerEvent(payload)
+		elseif kind == "Launch" then
+			-- [v2.4] Uppercut: los dos suben y quedan flotando hasta LaunchEnd
+			MovementController.StartAirHang(payload.VelocityY, payload.RiseTime, payload.MaxTime)
+		elseif kind == "LaunchEnd" then
+			MovementController.StopAirHang()
+			assistUntil = 0 -- termina la ayuda continua del combo aéreo
+		elseif kind == "Grab" then
+			-- [v2.5] R en el aire: este jugador queda sujeto delante de quien lo agarra
+			MovementController.StartGrab(payload.Holder, payload.Duration, payload.Offset)
+		elseif kind == "GrabEnd" then
+			MovementController.StopGrab()
+		elseif kind == "Assist" then
+			-- [v2.7] Girar hacia el rival y, si está algo lejos, un paso corto hacia él
+			local targetModel = payload.Target
+			local targetRoot = if typeof(targetModel) == "Instance" then targetModel:FindFirstChild("HumanoidRootPart") else nil
+			local character = player.Character
+			local myRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+			if targetRoot and targetRoot:IsA("BasePart") and myRoot and myRoot:IsA("BasePart") then
+				assistRoot = targetRoot
+				assistUntil = math.max(assistUntil, os.clock() + (if typeof(payload.Duration) == "number" then payload.Duration else 0.3))
+
+				local assistCfg = CombatConfig.Assist
+				local gap = if typeof(payload.Gap) == "number" then payload.Gap else 0
+				if gap > assistCfg.StopDistance then
+					local offset = targetRoot.Position - myRoot.Position
+					local flat = Vector3.new(offset.X, 0, offset.Z)
+					if flat.Magnitude > 0.01 then
+						MovementController.ApplyKnockback(
+							flat.Unit,
+							math.min(gap - assistCfg.StopDistance, assistCfg.MaxStep),
+							assistCfg.StepTime
+						)
+					end
+				end
+			end
 		elseif kind == "Knockback" then
 			-- [v2.2] Empuje por M1 recibido: lo aplica el cliente dueño del personaje
 			MovementController.ApplyKnockback(payload.Direction, payload.Distance, payload.Duration)

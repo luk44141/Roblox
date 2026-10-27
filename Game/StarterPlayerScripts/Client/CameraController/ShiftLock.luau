@@ -71,6 +71,9 @@ function ShiftLock.new(config)
 	-- Guarda anti Alt+Tab (LeftAlt también se dispara al cambiar de ventana)
 	self.lastToggleTime = -math.huge
 	self.stateBeforeToggle = false
+	self.focusLostAt = -math.huge
+	self.focusRegained = true
+	self.lastInputAt = -math.huge
 
 	self.dotGui, self.dot, self.dotStroke = createDot(config.Dot)
 
@@ -78,9 +81,23 @@ function ShiftLock.new(config)
 		UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			self:_onInputBegan(input, gameProcessed)
 		end),
+		-- [v2.6] Pulsar Alt en Windows suele disparar WindowFocusReleased al instante, aunque no hayas salido de la
+		-- ventana. Solo se considera un Alt+Tab de verdad (y se deshace el toggle) si Tab está apretada.
 		UserInputService.WindowFocusReleased:Connect(function()
-			if os.clock() - self.lastToggleTime < self.config.AltTabGuardTime then
+			self.focusLostAt = os.clock()
+			self.focusRegained = false
+			if os.clock() - self.lastToggleTime < self.config.AltTabGuardTime
+				and UserInputService:IsKeyDown(Enum.KeyCode.Tab)
+			then
 				self:SetEnabled(self.stateBeforeToggle)
+			end
+		end),
+		UserInputService.WindowFocused:Connect(function()
+			self.focusRegained = true
+		end),
+		UserInputService.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement then
+				self.lastInputAt = os.clock()
 			end
 		end),
 	}
@@ -92,6 +109,8 @@ function ShiftLock:_onInputBegan(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
+
+	self.lastInputAt = os.clock()
 
 	if input.KeyCode == self.config.ToggleKey then
 		self.stateBeforeToggle = self.Enabled

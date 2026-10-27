@@ -15,7 +15,10 @@
 
 local UserInputService = game:GetService("UserInputService")
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local cfg = require(script:WaitForChild("SprintConfig"))
+local DashConfig = require(ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("DashConfig"))
 
 local SprintController = {}
 
@@ -23,18 +26,64 @@ local humanoid: Humanoid? = nil
 local isSprintKeyHeld = false
 local started = false
 local connections = {}
+local boostConnection: RBXScriptConnection? = nil
+local boostToken = 0
+
+-- [v2.3] Bonus de velocidad del Perfect Dodge (atributo PerfectDodgeBoostUntil, tiempo del servidor).
+local function getBoostMultiplier(): number
+	local boost = DashConfig.PerfectDodgeSpeedBoost
+	local character = humanoid and humanoid.Parent
+	if not boost or not character then
+		return 1
+	end
+	local untilTime = character:GetAttribute("PerfectDodgeBoostUntil")
+	if typeof(untilTime) == "number" and workspace:GetServerTimeNow() < untilTime then
+		return boost.Multiplier
+	end
+	return 1
+end
 
 -- Aplica la velocidad correspondiente según el estado actual.
 -- Solo se llama ante eventos (tecla, respawn, foco), nunca por fotograma.
 local function updateSpeed()
 	if humanoid and humanoid.Parent then
-		humanoid.WalkSpeed = if isSprintKeyHeld then cfg.SprintSpeed else cfg.WalkSpeed
+		humanoid.WalkSpeed = (if isSprintKeyHeld then cfg.SprintSpeed else cfg.WalkSpeed) * getBoostMultiplier()
 	end
+end
+
+-- Reaplica la velocidad al recibir el bonus y justo cuando termina (por eventos, nunca por fotograma).
+local function watchBoost()
+	if boostConnection then
+		boostConnection:Disconnect()
+		boostConnection = nil
+	end
+	local character = humanoid and humanoid.Parent
+	if not character then
+		return
+	end
+	boostConnection = character:GetAttributeChangedSignal("PerfectDodgeBoostUntil"):Connect(function()
+		boostToken += 1
+		local token = boostToken
+		updateSpeed()
+		local untilTime = character:GetAttribute("PerfectDodgeBoostUntil")
+		if typeof(untilTime) == "number" then
+			task.delay(math.max(untilTime - workspace:GetServerTimeNow(), 0) + 0.05, function()
+				if token == boostToken then
+					updateSpeed()
+				end
+			end)
+		end
+	end)
 end
 
 -- Detecta si el jugador está escribiendo en un TextBox (por ejemplo, el chat).
 local function isTyping(): boolean
 	return UserInputService:GetFocusedTextBox() ~= nil
+end
+
+-- [v2.4] ¿Está apretada la tecla de sprint? (la usa el ataque corriendo: no exige haber llegado a la velocidad máxima)
+function SprintController.IsSprintKeyHeld(): boolean
+	return isSprintKeyHeld
 end
 
 -- true solo si la tecla está presionada Y el personaje realmente se mueve más rápido que caminando.
@@ -48,7 +97,7 @@ function SprintController.IsSprinting(): boolean
 	end
 	local velocity = root.AssemblyLinearVelocity
 	local planarSpeed = math.sqrt(velocity.X * velocity.X + velocity.Z * velocity.Z)
-	return planarSpeed > cfg.WalkSpeed + cfg.SprintDetectionMargin
+	return planarSpeed > cfg.WalkSpeed * getBoostMultiplier() + cfg.SprintDetectionMargin
 end
 
 -- Llamar con el Humanoid de un personaje nuevo, y con nil al removerlo.
@@ -58,6 +107,12 @@ function SprintController.SetCharacter(newHumanoid: Humanoid?)
 		-- Sincroniza con el estado real del teclado (por si Shift ya estaba presionado al reaparecer).
 		isSprintKeyHeld = UserInputService:IsKeyDown(cfg.SprintKey) and not isTyping()
 		updateSpeed()
+		watchBoost()
+	else
+		if boostConnection then
+			boostConnection:Disconnect()
+			boostConnection = nil
+		end
 	end
 end
 
@@ -113,6 +168,10 @@ function SprintController.Destroy()
 	table.clear(connections)
 	isSprintKeyHeld = false
 	updateSpeed()
+	if boostConnection then
+		boostConnection:Disconnect()
+		boostConnection = nil
+	end
 	humanoid = nil
 	started = false
 end

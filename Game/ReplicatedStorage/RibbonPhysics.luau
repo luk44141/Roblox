@@ -1,30 +1,20 @@
 --[[
-	RibbonPhysics (ModuleScript)  -  v3
+	RibbonPhysics (ModuleScript)  -  v4 (versión limpia)
 	UBICACIÓN: ReplicatedStorage > RibbonPhysics
 
-	Cinta con huesos (Bone) para Roblox. Método: cadena "spring bone" (partículas
-	en mundo, con restricciones LOCALES por segmento). Es el método típico de
-	colas/pelo/cintas en juegos porque es estable y acotado:
+	Cinta con huesos (Bone) para Roblox. Método "spring bone": una cadena de
+	partículas en el mundo con restricciones por segmento.
 
-	  * Huesos hasta StartBone (por defecto "Bone.005"): NO se simulan; siguen a
-	    la espada exactamente y conservan su pose base. Viento, inercia y demás
-	    solo actúan a partir del hueso SIGUIENTE a StartBone.
-	  * Cada partícula libre es atraída hacia su posición de reposo RELATIVA A SU
-	    PADRE (la dirección de reposo del segmento, girada con la espada). Eso da
-	    inercia lineal y angular (si la espada gira, las posiciones de reposo
-	    giran y la cinta las sigue con retraso).
-	  * Cada segmento tiene un límite DURO de desvío angular respecto a su
-	    dirección de reposo (Stiffness): la cinta no puede "volverse loca"
-	    aunque la espada dé un salto brusco.
-	  * Longitud de cada segmento exacta, procesada de padre a hijo en una sola
-	    pasada (sin iteraciones ni error residual).
-	  * Follow: fracción del movimiento de la espada que cada hueso sigue sin
-	    retraso (alto cerca de la empuñadura, bajo en la punta).
-	  * Conversión a huesos: arco mínimo que alinea el eje de cadena de cada
-	    hueso (hacia su hijo) con el segmento simulado; no hace falta conocer el
-	    eje X/Y/Z de Blender y no se acumula torsión.
-	  * Colisión (opcional): cajas orientadas + punto medio de cada segmento.
-	    Corrección VISUAL de la cadena simulada, no física real.
+	  * Los huesos hasta StartBone NO se simulan: siguen a la espada exactamente.
+	    El viento y el movimiento solo actúan a partir de StartBone.
+	  * Cada partícula libre es atraída hacia su posición de reposo (relativa a su
+	    padre, girada con la espada). Si mueves la espada (por ejemplo con la D)
+	    la cinta se queda atrás y luego la alcanza: inercia lineal y angular.
+	  * El viento es ruido suave (Perlin) que empuja solo hacia los lados.
+	  * Longitud de cada segmento exacta; límite angular por segmento (Stiffness).
+	  * Suelo: la cinta no atraviesa el piso, no rebota y se arrastra un poco.
+	  * Los huesos se orientan con el arco mínimo hacia el segmento simulado, así
+	    que no hace falta conocer los ejes X/Y/Z de Blender.
 ]]
 
 local RunService = game:GetService("RunService")
@@ -36,17 +26,14 @@ RibbonPhysics.__index = RibbonPhysics
 
 --------------------------------------------------------------------------------
 -- CONFIGURACIÓN POR DEFECTO
--- Los parámetros con { Near, Tip } van del primer hueso libre (Near) a la punta (Tip).
+-- Los parámetros { Near, Tip } van del primer hueso libre (Near) a la punta (Tip).
 --------------------------------------------------------------------------------
 RibbonPhysics.DefaultConfig = {
-	Debug = true,
-	DebugDraw = false, -- esferas cian = partículas; cajas rojas = colisionadores
-	DebugStats = false, -- imprime cada segundo el desvío máximo respecto al reposo
+	Debug = false, -- true = imprime en Output qué detecta (huesos, suelo...)
 
 	Names = {
 		Ribbon = "Ribbon",
 		RootPart = "RootPart",
-		Colliders = { "Shape", "Base" },
 	},
 
 	Simulation = {
@@ -54,59 +41,52 @@ RibbonPhysics.DefaultConfig = {
 		MaxSubSteps = 8,
 		MaxFrameDelta = 1 / 15,
 		TeleportDistance = 30, -- si la espada salta más que esto en un frame, se reinicia
-		MaxSpeed = 80, -- velocidad máxima de una partícula (studs/s)
-		InputSmoothing = 0.04, -- segundos; filtra el movimiento/giro de la espada que ve la cinta (quita escalones). 0 = off
+		MaxSpeed = 45, -- velocidad máxima de una partícula (studs/s)
+		InputSmoothing = 0.04, -- segundos; quita escalones del movimiento de la espada. 0 = off
 	},
 
 	Chain = {
-		StartBone = "Bone.005", -- este hueso y los anteriores NO se simulan
+		StartBone = "Bone.004", -- PRIMER hueso que gira; los anteriores quedan fijos
 	},
 
 	Physics = {
-		Curve = 1.5, -- 1 = lineal de Near a Tip; >1 = los huesos cercanos se parecen más a Near
-		Elasticity = { Near = 100, Tip = 14 }, -- fuerza de recuperación (1/s^2). Alto = más rígida
+		Elasticity = { Near = 80, Tip = 8 }, -- fuerza que devuelve la cinta a su forma. Alto = más rígida
 		Damping = { Near = 12, Tip = 6 }, -- pérdida de energía (1/s). Alto = se asienta antes
-		AirDrag = { Near = 0.3, Tip = 1.5 }, -- resistencia del aire (1/s): retraso mientras hay velocidad
-		Stiffness = { Near = 0.95, Tip = 0.3 }, -- 0..1: límite angular por segmento. 1 = rígido
-		Follow = { Near = 1, Tip = 0.1 }, -- 1 = sigue a la espada sin retraso; 0 = inercia total
-		Gravity = Vector3.zero,
+		AirDrag = { Near = 0.4, Tip = 1.5 }, -- resistencia del aire (1/s): retraso y empuje del viento
+		Stiffness = { Near = 0.85, Tip = 0.1 }, -- 0..1: límite angular por segmento. 1 = rígido
+		Follow = { Near = 1, Tip = 0.05 }, -- 1 = sigue a la espada sin retraso; 0 = inercia total
+		ConstraintDamping = 0.5, -- 0..1: evita latigazos cuando la cadena se tensa de golpe
+		MaxRise = 0.5, -- la cinta no puede subir más que esto por encima de StartBone (studs). nil = sin límite
 	},
 
 	Wind = {
 		Enabled = true,
-		Strength = 6, -- velocidad del aire (studs/s)
-		Speed = 0.5,
+		Strength = 4.5, -- velocidad del aire (studs/s): más = más movimiento
+		Speed = 0.35, -- rapidez de las ráfagas
 		SpatialPhase = 0.06, -- bajo = ondula coherente; alto = irregular
-		Space = "World", -- "World" o "Local" (relativo a la espada)
-		AxisMask = Vector3.new(1, 0, 1), -- Y = 0 => nunca levanta (en Space "World")
-		Steady = Vector3.zero,
+		AxisMask = Vector3.new(1, 0, 1), -- Y = 0 => nunca levanta
 	},
 
-	Collision = {
-		Enabled = false, -- actívalo cuando la cinta ya se vea bien; revisa las cajas con DebugDraw
-		Radius = 0.12,
-		IgnoreFirstParticles = 3,
-		MidpointSamples = 1,
-		Softness = 0.75,
-		ContactDamping = 0.5,
-		RestMargin = 0.15,
-	},
-
-	-- Suelo: raycast hacia abajo desde cada partícula libre (corrección visual)
+	-- Suelo: un raycast hacia abajo desde cada partícula libre
 	Ground = {
 		Enabled = true,
-		Radius = 0.15, -- semigrosor de la cinta sobre el suelo; sube si el borde de la malla aún se hunde
-		Lift = 1.5, -- altura sobre la partícula desde la que se lanza el rayo
-		SearchDepth = 40, -- distancia máxima al suelo bajo la espada (si no hay suelo, no se comprueba)
-		CheckHeight = 8, -- solo se comprueban partículas a menos de esta altura sobre el suelo
-		Friction = 8, -- rozamiento al arrastrarse por el suelo (1/s)
+		Radius = 0.2, -- distancia mínima de la cinta al suelo
+		Lift = 1.5, -- altura sobre la partícula desde la que sale el rayo
+		SearchDepth = 40, -- distancia máxima al suelo bajo la espada
+		CheckHeight = 8, -- solo se comprueban partículas a menos de esto sobre el suelo
+		Friction = 5, -- rozamiento al arrastrarse (1/s). Alto = se frena enseguida
+		StaticSpeed = 0.5, -- por debajo de esta velocidad (studs/s) sobre el suelo se queda quieta
+		Ignore = {}, -- objetos que NO cuentan como suelo (el LocalScript añade aquí las espadas)
 	},
 
 	Bones = {
-		MaxBendAngle = 70, -- grados máx. por articulación (respecto al padre)
-		ResponseGain = 1, -- NEGATIVO invierte la respuesta; >1 exagera
-		SmoothingRate = 30, -- suavizado temporal de la salida (1/s); 0 = off
-		SpatialSmoothing = 1, -- pasadas de suavizado a lo largo de la cadena; 0 = off
+		MaxBendAngle = 90, -- grados máx. por articulación
+		TipMaxBendAngle = 40, -- ídem en la punta (baja gradualmente)
+		SmoothingRate = 18, -- suavizado temporal de la salida (1/s); 0 = off
+		TipSmoothingRate = 12, -- ídem en la punta
+		TipSmoothCount = 6, -- cuántas partículas finales reciben una pasada extra de suavizado
+		SpatialSmoothing = 2, -- pasadas de suavizado a lo largo de la cadena
+		MaxAngularSpeed = 400, -- grados/s máx. por hueso (corta tirones); 0 = sin límite
 	},
 }
 
@@ -156,6 +136,7 @@ local function sortBones(list)
 	end)
 end
 
+-- Rotación mínima que lleva el vector "from" hacia "to" (limitada a maxAngle)
 local function arc(from, to, maxAngle)
 	local angle = math.acos(math.clamp(from:Dot(to), -1, 1))
 	if angle < 1e-5 then
@@ -171,22 +152,22 @@ local function arc(from, to, maxAngle)
 	return CFrame.fromAxisAngle(axis.Unit, math.min(angle, maxAngle))
 end
 
-local function boxPush(cf, half, point)
-	local l = cf:PointToObjectSpace(point)
-	local ax, ay, az = math.abs(l.X), math.abs(l.Y), math.abs(l.Z)
-	if ax >= half.X or ay >= half.Y or az >= half.Z then
-		return nil
+-- Contacto con el suelo sin rebote: se anula la velocidad que entra en el suelo,
+-- la que va a lo largo del suelo decae con mu (1/s) y por debajo de "stat" se queda quieta
+local function groundVel(np, q, gn, h, mu, stat)
+	local v = np - q
+	local vn = v:Dot(gn)
+	-- sin rebote: toda la velocidad perpendicular al suelo se anula (entrando o saliendo)
+	v = v - gn * vn
+	vn = 0
+	local vt = v - gn * vn
+	if mu > 0 then
+		vt = vt * math.exp(-mu * h)
 	end
-	local px, py, pz = half.X - ax, half.Y - ay, half.Z - az
-	local nl
-	if px <= py and px <= pz then
-		nl = Vector3.new(l.X >= 0 and half.X or -half.X, l.Y, l.Z)
-	elseif py <= pz then
-		nl = Vector3.new(l.X, l.Y >= 0 and half.Y or -half.Y, l.Z)
-	else
-		nl = Vector3.new(l.X, l.Y, l.Z >= 0 and half.Z or -half.Z)
+	if stat > 0 and vt.Magnitude / h < stat then
+		vt = Vector3.zero
 	end
-	return cf:PointToWorldSpace(nl) - point
+	return np - (gn * vn + vt)
 end
 
 local function collectBones(container)
@@ -238,7 +219,7 @@ function RibbonPhysics:_setup()
 	local sword = self.sword
 
 	if not sword or not sword:IsA("Model") then
-		self:_warn("El objeto 'zanpakuto' no existe o no es un Model.")
+		self:_warn("El objeto de la espada no existe o no es un Model.")
 		return false
 	end
 
@@ -247,13 +228,6 @@ function RibbonPhysics:_setup()
 		self:_warn("No se encontró '" .. cfg.Names.Ribbon .. "' dentro del modelo (se continúa buscando huesos).")
 	elseif not ribbon:IsA("MeshPart") then
 		self:_warn("'" .. ribbon:GetFullName() .. "' no es un MeshPart; la malla con huesos debe ser un MeshPart.")
-	else
-		local okProp, skinned = pcall(function()
-			return ribbon.HasSkinnedMesh
-		end)
-		if okProp and skinned == false then
-			self:_warn("El MeshPart Ribbon indica HasSkinnedMesh = false: la malla no tiene skinning, los huesos no la deformarán.")
-		end
 	end
 
 	local rootPart = sword:FindFirstChild(cfg.Names.RootPart, true)
@@ -268,6 +242,7 @@ function RibbonPhysics:_setup()
 	end
 	self:_log("Huesos encontrados:", #found, "dentro de", found[1]:GetFullName())
 
+	-- Cadena de huesos: raíz -> primer hijo -> ...
 	local roots = {}
 	for _, b in ipairs(found) do
 		if not (b.Parent and b.Parent:IsA("Bone")) then
@@ -334,7 +309,7 @@ function RibbonPhysics:_setup()
 			self:_warn("StartBone '" .. startName .. "' está demasiado cerca de la punta; se ignora.")
 			self.startIdx = 1
 		else
-			self:_log("Simulación desde '" .. startName .. "' (hueso " .. self.startIdx .. " de " .. n .. "): los anteriores quedan fijos, los " .. (n - self.startIdx) .. " siguientes son libres.")
+			self:_log("'" .. startName .. "' (hueso " .. self.startIdx .. " de " .. n .. ") es el PRIMER hueso que gira; los anteriores quedan fijos y los " .. (n - self.startIdx) .. " siguientes son libres.")
 		end
 	end
 
@@ -366,17 +341,6 @@ function RibbonPhysics:_setup()
 		self.axis[i] = o.Magnitude > 1e-6 and o.Unit or Vector3.yAxis
 	end
 
-	local mismatch = 0
-	for i = 2, n do
-		local worldLen = (chain[i].WorldCFrame.Position - chain[i - 1].WorldCFrame.Position).Magnitude
-		if math.abs(worldLen - self.plen[i]) > 0.02 * math.max(self.plen[i], 0.01) then
-			mismatch += 1
-		end
-	end
-	if mismatch > 0 then
-		self:_warn(mismatch .. " segmentos tienen longitud local distinta a la del mundo: ¿el MeshPart está escalado?")
-	end
-
 	-- Parámetros por hueso libre
 	local ph = cfg.Physics
 	local s0 = self.startIdx
@@ -384,7 +348,7 @@ function RibbonPhysics:_setup()
 	self.k, self.damp, self.drag, self.stf, self.fol = {}, {}, {}, {}, {}
 	for i = s0 + 1, n do
 		local u = (free > 1) and ((i - s0 - 1) / (free - 1)) or 0
-		local w = u ^ ph.Curve
+		local w = u
 		self.k[i] = lerpParam(ph.Elasticity, w)
 		self.damp[i] = lerpParam(ph.Damping, w)
 		self.drag[i] = lerpParam(ph.AirDrag, w)
@@ -392,62 +356,28 @@ function RibbonPhysics:_setup()
 		self.fol[i] = math.clamp(lerpParam(ph.Follow, w), 0, 1)
 	end
 
+	local freeLen = 0
+	for i = s0 + 1, n do
+		freeLen += self.plen[i]
+	end
+	self:_log(string.format("Cinta libre: %d huesos, %.2f studs de largo, segmento medio %.3f studs", free, freeLen, freeLen / math.max(free, 1)))
+
 	-- Estado
-	self.pos, self.prv, self.goal, self.windVel = {}, {}, {}, {}
+	self.pos, self.prv, self.windVel = {}, {}, {}
 	self.out = {}
-	self:_reset(self.rootBone.WorldCFrame)
+	self.gPos, self.gNrm = {}, {} -- plano de suelo bajo cada partícula (del último frame)
 	for i = 1, n do
 		self.windVel[i] = Vector3.zero
 	end
+	self:_reset(self.rootBone.WorldCFrame)
 
-	-- Colisionadores
-	self.boxes = {}
-	local colCfg = cfg.Collision
-	if colCfg.Enabled then
-		for _, name in ipairs(cfg.Names.Colliders) do
-			local part = sword:FindFirstChild(name, true)
-			if part and part:IsA("BasePart") then
-				local half = part.Size / 2 + Vector3.one * colCfg.Radius
-				local cf = part.CFrame
-				table.insert(self.boxes, { name = name, part = part, half = half, cf = cf, prev = cf, cur = cf })
-			else
-				self:_warn("Colisionador '" .. name .. "' no encontrado o no es BasePart; se ignora.")
-			end
-		end
-		if #self.boxes == 0 then
-			self:_warn("No hay colisionadores válidos: la cinta puede atravesar la espada.")
-		end
-	end
-
-	-- Parámetros del raycast de suelo (excluye la espada y el personaje local; solo piezas con CanCollide)
+	-- Raycast de suelo (excluye la espada y el personaje local)
 	if cfg.Ground.Enabled then
 		local rp = RaycastParams.new()
 		rp.FilterType = Enum.RaycastFilterType.Exclude
 		rp.RespectCanCollide = true
 		rp.FilterDescendantsInstances = { sword }
 		self.groundParams = rp
-	end
-
-	-- Partículas que en reposo ya están dentro/pegadas a una caja: no colisionan con ella
-	self.ignore = {}
-	local rootCF = self.rootBone.WorldCFrame
-	local margin = Vector3.one * colCfg.RestMargin
-	for i = 1, n do
-		self.ignore[i] = {}
-		local g = rootCF:PointToWorldSpace(self.restLocal[i])
-		for bi, b in ipairs(self.boxes) do
-			if boxPush(b.cf, b.half + margin, g) then
-				self.ignore[i][bi] = true
-			end
-		end
-	end
-
-	-- Diagnóstico de movimiento
-	self.diag = { parts = {}, reported = {}, rootReported = false, anyMoved = false, anyMovedAt = 0, time = 0, noMoveNoted = false }
-	for _, d in ipairs(sword:GetDescendants()) do
-		if d:IsA("BasePart") then
-			self.diag.parts[d] = d.CFrame
-		end
 	end
 
 	return true
@@ -466,7 +396,6 @@ function RibbonPhysics:_reset(frame)
 		local g = frame:PointToWorldSpace(self.restLocal[i])
 		self.pos[i] = g
 		self.prv[i] = g
-		self.goal[i] = g
 	end
 	self.frame = frame
 	self.sframe = frame
@@ -485,7 +414,7 @@ end
 function RibbonPhysics:_updateWind(cur)
 	local w = self.cfg.Wind
 	local W = self.windVel
-	if not w.Enabled or (w.Strength == 0 and w.Steady == Vector3.zero) then
+	if not w.Enabled or w.Strength == 0 then
 		for i = 1, self.n do
 			W[i] = Vector3.zero
 		end
@@ -493,7 +422,6 @@ function RibbonPhysics:_updateWind(cur)
 	end
 	local t = self.time * w.Speed
 	local mask = w.AxisMask
-	local useLocal = w.Space == "Local"
 	local gust = 1 + math.noise(t * 0.4, 3.3, self.seed) * 1.2
 	local amp = w.Strength * 2 * math.max(gust, 0.2)
 	for i = self.startIdx + 1, self.n do
@@ -501,10 +429,7 @@ function RibbonPhysics:_updateWind(cur)
 		local nx = math.noise(t + ph, 0.31, self.seed)
 		local ny = math.noise(t * 0.8 + ph, 7.7, self.seed)
 		local nz = math.noise(t + ph, 15.2, self.seed)
-		local v = Vector3.new(nx * mask.X, ny * mask.Y, nz * mask.Z) * amp + w.Steady
-		if useLocal then
-			v = cur:VectorToWorldSpace(v)
-		end
+		local v = Vector3.new(nx * mask.X, ny * mask.Y, nz * mask.Z) * amp
 		W[i] = v
 	end
 end
@@ -514,14 +439,14 @@ end
 --------------------------------------------------------------------------------
 function RibbonPhysics:_step(h, frame, sframe, lastS)
 	local cfg = self.cfg
-	local ph, col = cfg.Physics, cfg.Collision
 	local n, s0 = self.n, self.startIdx
 	local P, Q, W = self.pos, self.prv, self.windVel
 	local restLocal, restOff, plen = self.restLocal, self.restOff, self.plen
 	local k, damp, drag, stf, fol = self.k, self.damp, self.drag, self.stf, self.fol
-	local gravity = ph.Gravity
 	local maxSpd = cfg.Simulation.MaxSpeed
+	local cdamp = math.clamp(cfg.Physics.ConstraintDamping, 0, 1)
 	local hh = h * h
+	local maxRise = cfg.Physics.MaxRise
 	-- La cinta libre "ve" la espada filtrada (sframe): sin escalones ni saltos. Los huesos fijos usan la exacta.
 	local move = sframe.Position - lastS.Position
 
@@ -539,12 +464,10 @@ function RibbonPhysics:_step(h, frame, sframe, lastS)
 		Q[i] = g
 	end
 
-	local boxes = self.boxes
-	local collide = col.Enabled and #boxes > 0
-	local skipCol = math.max(col.IgnoreFirstParticles, s0)
-	local soft, midN = col.Softness, col.MidpointSamples
-	local cd = col.ContactDamping
-	local ignore = self.ignore
+	local gcfg = cfg.Ground
+	local gOn = gcfg.Enabled and self.groundParams ~= nil
+	local gr, gfric, gstat = gcfg.Radius, gcfg.Friction, gcfg.StaticSpeed
+	local gPos, gNrm = self.gPos, self.gNrm
 
 	for i = s0 + 1, n do
 		local par = P[i - 1] -- el padre ya está en su posición final de este subpaso
@@ -559,9 +482,17 @@ function RibbonPhysics:_step(h, frame, sframe, lastS)
 
 		-- Posición de reposo: relativa al padre simulado, girada con la espada
 		local restW = par + sframe:VectorToWorldSpace(restOff[i])
+		-- La posición de reposo nunca queda bajo el suelo: así el muelle no empuja contra él (evita el rebote)
+		local gp0 = gOn and gPos[i] or nil
+		if gp0 then
+			local sd0 = (restW - gp0):Dot(gNrm[i])
+			if sd0 < gr then
+				restW = restW + gNrm[i] * (gr - sd0)
+			end
+		end
 
-		-- Fuerzas: recuperación elástica + resistencia del aire respecto al viento + gravedad
-		local accel = (restW - p) * k[i] + (W[i] - disp / h) * drag[i] + gravity
+		-- Fuerzas: recuperación elástica + resistencia del aire respecto al viento
+		local accel = (restW - p) * k[i] + (W[i] - disp / h) * drag[i]
 
 		local mv = move * fol[i]
 		local np = p + disp + accel * hh + mv
@@ -569,7 +500,7 @@ function RibbonPhysics:_step(h, frame, sframe, lastS)
 
 		-- Límite de desvío respecto a la dirección de reposo del segmento.
 		-- La corrección también se aplica a la posición previa: el segmento se desliza
-		-- por el límite en lugar de rebotar (sin golpes bruscos).
+		-- por el límite en lugar de rebotar.
 		local d = restW - np
 		local dl = d.Magnitude
 		local maxl = plen[i] * (1 - stf[i]) * 2
@@ -579,80 +510,100 @@ function RibbonPhysics:_step(h, frame, sframe, lastS)
 			Q[i] = Q[i] + corr
 		end
 
-		-- Colisión (opcional)
-		local touched = false
-		if collide and i > skipCol then
-			local ign = ignore[i]
-			for bi, b in ipairs(boxes) do
-				if not ign[bi] then
-					local c = boxPush(b.cur, b.half, np)
-					if c then
-						np = np + c * soft
-						touched = true
-					end
-					for s = 1, midN do
-						local f = s / (midN + 1)
-						local pt = par:Lerp(np, f)
-						local c2 = boxPush(b.cur, b.half, pt)
-						if c2 then
-							np = np + (c2 * soft) / f
-							touched = true
-						end
-					end
-				end
-			end
-		end
-
-		-- Longitud exacta del segmento
+		-- Longitud exacta del segmento. Una parte de la corrección no se convierte en velocidad
+		-- (evita latigazos cuando la cadena se tensa de golpe).
 		local dd = par - np
 		local L = dd.Magnitude
 		if L > 1e-6 then
-			np = np + dd * ((L - plen[i]) / L)
+			local lc = dd * ((L - plen[i]) / L)
+			np = np + lc
+			Q[i] = Q[i] + lc * cdamp
+		end
+
+		-- Techo: la cinta cuelga, no sube por encima de su hueso de inicio (evita que "vuele" al caminar)
+		if maxRise then
+			local over = np.Y - (P[s0].Y + maxRise)
+			if over > 0 then
+				np = np - Vector3.yAxis * over
+				Q[i] = Q[i] - Vector3.yAxis * math.max(over, 0)
+			end
+		end
+
+		-- Suelo (plano del frame anterior): se empuja por encima, sin rebote y con rozamiento
+		local gp = gOn and gPos[i] or nil
+		if gp then
+			local gn = gNrm[i]
+			local sd = (np - gp):Dot(gn)
+			if sd < gr then
+				local push = gn * (gr - sd)
+				np = np + push
+				Q[i] = groundVel(np, Q[i] + push, gn, h, gfric, gstat)
+			end
 		end
 
 		P[i] = np
-		if touched then
-			Q[i] = Q[i]:Lerp(np, cd)
-		end
 	end
 end
 
 --------------------------------------------------------------------------------
--- PARTÍCULAS -> Bone.Transform
+-- SUELO: busca la superficie bajo cada partícula y corrige las que quedaron por debajo
 --------------------------------------------------------------------------------
--- Suelo: empuja las partículas libres por encima de la superficie (corrección visual)
 function RibbonPhysics:_groundPass(dt)
 	local g = self.cfg.Ground
 	local P, Q = self.pos, self.prv
 	local s0, n, plen = self.startIdx, self.n, self.plen
 	local rp = self.groundParams
 
-	-- El filtro excluye la espada y el personaje local (se actualiza al reaparecer)
+	-- El filtro excluye la espada, el personaje local y las demás espadas
 	local char = Players.LocalPlayer and Players.LocalPlayer.Character or nil
-	if char ~= self.groundChar then
+	local extra = g.Ignore
+	local extraN = extra and #extra or 0
+	if char ~= self.groundChar or extraN ~= self.groundIgnoreN then
 		self.groundChar = char
+		self.groundIgnoreN = extraN
 		local list = { self.sword }
 		if char then
 			table.insert(list, char)
+		end
+		for i = 1, extraN do
+			if extra[i] and extra[i].Parent then
+				table.insert(list, extra[i])
+			end
 		end
 		rp.FilterDescendantsInstances = list
 	end
 
 	-- Comprobación barata: ¿hay suelo bajo la espada? Si no, no se hace nada
 	local rr = Workspace:Raycast(P[s0], Vector3.new(0, -g.SearchDepth, 0), rp)
+	if self.cfg.Debug then
+		if rr and not self.groundLogged then
+			self.groundLogged = true
+			self:_log("Suelo detectado: " .. rr.Instance:GetFullName() .. " (CanCollide=" .. tostring(rr.Instance.CanCollide) .. ")")
+		elseif not rr and self.frameCount % 120 == 0 then
+			self:_warn("No se detecta suelo bajo la espada (rayo de " .. g.SearchDepth .. " studs). Revisa CanCollide/CanQuery de la baseplate.")
+		end
+	end
 	if not rr then
+		for i = 1, n do
+			self.gPos[i] = nil
+		end
 		return
 	end
 	local limitY = rr.Position.Y + g.CheckHeight
 
-	local fr = 1 - math.exp(-g.Friction * dt)
 	local lift, radius = g.Lift, g.Radius
 	for i = s0 + 1, n do
 		local p = P[i]
+		self.gPos[i] = nil
 		if p.Y < limitY then
-			local res = Workspace:Raycast(p + Vector3.new(0, lift, 0), Vector3.new(0, -(lift + radius + 0.5), 0), rp)
+			-- El rayo sale desde encima de la mano (o de la partícula, si está más alta): así detecta
+			-- el suelo aunque la partícula ya esté hundida por debajo de él
+			local top = math.max(p.Y, P[s0].Y) + lift
+			local res = Workspace:Raycast(Vector3.new(p.X, top, p.Z), Vector3.new(0, -(top - p.Y + radius + 2), 0), rp)
 			if res then
 				local nrm = res.Normal
+				self.gPos[i] = res.Position -- se guarda el plano para el siguiente frame
+				self.gNrm[i] = nrm
 				local sd = (p - res.Position):Dot(nrm)
 				if sd < radius then
 					local np = p + nrm * (radius - sd)
@@ -666,8 +617,7 @@ function RibbonPhysics:_groundPass(dt)
 					if sd2 < radius then
 						np = np + nrm * (radius - sd2)
 					end
-					-- conserva la velocidad (sin rebote) y añade rozamiento
-					Q[i] = (Q[i] + (np - p)):Lerp(np, fr)
+					Q[i] = groundVel(np, Q[i] + (np - p), nrm, dt, 0, 0)
 					P[i] = np
 				end
 			end
@@ -675,26 +625,25 @@ function RibbonPhysics:_groundPass(dt)
 	end
 end
 
+--------------------------------------------------------------------------------
+-- PARTÍCULAS -> Bone.Transform
+--------------------------------------------------------------------------------
 function RibbonPhysics:_apply(frame, dt)
 	local bcfg = self.cfg.Bones
 	local chain, base, axis = self.chain, self.base, self.axis
 	local n, s0 = self.n, self.startIdx
+	local gcfg = self.cfg.Ground
+	local gOn = gcfg.Enabled and self.groundParams ~= nil
+	local gr = gcfg.Radius
+	local gPos, gNrm = self.gPos, self.gNrm
 	local maxRad = math.rad(bcfg.MaxBendAngle)
-	local gain = bcfg.ResponseGain
-	local alpha = 1
-	if bcfg.SmoothingRate > 0 then
-		alpha = 1 - math.exp(-bcfg.SmoothingRate * dt)
-	end
+	local tipMaxRad = math.rad(bcfg.TipMaxBendAngle or bcfg.MaxBendAngle)
+	local rate0 = bcfg.SmoothingRate
+	local rate1 = bcfg.TipSmoothingRate or rate0
 
 	local Q = self.out
 	for i = 1, n do
-		local p = self.pos[i]
-		if gain == 1 or i <= s0 then
-			Q[i] = p
-		else
-			local g = self.goal[i]
-			Q[i] = g + (p - g) * gain
-		end
+		Q[i] = self.pos[i]
 	end
 
 	-- Suavizado espacial (solo partículas libres): evita ángulos ruidosos con segmentos cortos
@@ -705,30 +654,95 @@ function RibbonPhysics:_apply(frame, dt)
 			Q[i] = (prevQ + c * 2 + Q[i + 1]) * 0.25
 			prevQ = c
 		end
+		-- La última partícula se mezcla con la prolongación del segmento anterior
+		if n - 2 >= s0 then
+			Q[n] = Q[n] * 0.7 + (Q[n - 1] * 2 - Q[n - 2]) * 0.3
+		end
+	end
+
+	-- Pasada extra de suavizado solo en las últimas partículas
+	local tc = bcfg.TipSmoothCount or 0
+	if tc > 0 then
+		local from = math.max(s0 + 2, n - tc)
+		local prevQ = Q[from - 1]
+		for i = from, n - 1 do
+			local c = Q[i]
+			Q[i] = (prevQ + c * 2 + Q[i + 1]) * 0.25
+			prevQ = c
+		end
 	end
 
 	local posedParent = frame * base[1]
 
 	for i = 2, n do
 		local bone = chain[i]
+		local tu = math.clamp((i - s0) / math.max(n - s0, 1), 0, 1)
+		local mrad = maxRad + (tipMaxRad - maxRad) * tu
+		local rate = rate0 + (rate1 - rate0) * tu
+		local alpha = 1
+		if rate > 0 then
+			alpha = 1 - math.exp(-rate * dt)
+		end
 		local parentFrame = posedParent * bone.CFrame
 		local F0 = parentFrame * base[i]
 		local posed = F0
 
-		if i > s0 and i < n then
+		-- i >= s0: el hueso StartBone ya gira (apunta hacia la primera partícula libre)
+		if i >= s0 and i < n then
 			local d = Q[i + 1] - Q[i]
 			if d.Magnitude > 1e-5 then
 				local axisW = F0:VectorToWorldSpace(axis[i])
-				local R = arc(axisW, d.Unit, maxRad)
-				posed = CFrame.new(F0.Position) * R * F0.Rotation
+				posed = CFrame.new(F0.Position) * arc(axisW, d.Unit, mrad) * F0.Rotation
 			end
 		end
 
 		local newT = parentFrame:Inverse() * posed
+
+		-- Límite de velocidad angular: ningún hueso puede girar de golpe entre dos frames
+		local maxAS = bcfg.MaxAngularSpeed
+		if maxAS and maxAS > 0 and i > s0 then
+			local _, ang = self.lastT[i]:ToObjectSpace(newT):ToAxisAngle()
+			local lim = math.rad(maxAS) * dt
+			if ang > lim and ang > 1e-6 then
+				newT = self.lastT[i]:Lerp(newT, lim / ang)
+				posed = parentFrame * newT
+			end
+		end
+
 		if alpha < 1 then
 			newT = self.lastT[i]:Lerp(newT, alpha)
 			posed = parentFrame * newT
 		end
+
+		-- Suelo, comprobación final sobre la pose real: si el hueso hijo quedaría bajo la
+		-- superficie, este hueso gira lo necesario para levantarlo
+		if gOn and i >= s0 and i < n then
+			local gp = gPos[i + 1]
+			if gp then
+				local gn = gNrm[i + 1]
+				local childRel = chain[i + 1].CFrame * base[i + 1]
+				local fixed = false
+				for _ = 1, 4 do
+					local cpos = (posed * childRel).Position
+					local sd = (cpos - gp):Dot(gn)
+					local need = gr * 0.85
+					if sd >= need then
+						break
+					end
+					local from = cpos - posed.Position
+					local to = from + gn * (need - sd)
+					if from.Magnitude < 1e-5 or to.Magnitude < 1e-5 then
+						break
+					end
+					posed = CFrame.new(posed.Position) * arc(from.Unit, to.Unit, math.pi) * posed.Rotation
+					fixed = true
+				end
+				if fixed then
+					newT = parentFrame:Inverse() * posed
+				end
+			end
+		end
+
 		self.lastT[i] = newT
 		bone.Transform = newT
 		posedParent = posed
@@ -736,106 +750,7 @@ function RibbonPhysics:_apply(frame, dt)
 end
 
 --------------------------------------------------------------------------------
--- DIAGNÓSTICO
---------------------------------------------------------------------------------
-function RibbonPhysics:_diagnose(dt, cur)
-	local d = self.diag
-	if not d or d.rootReported then
-		return
-	end
-	d.time += dt
-
-	local rootMoved = (cur.Position - self.frame.Position).Magnitude > 1e-3
-		or (cur.LookVector - self.frame.LookVector).Magnitude > 1e-3
-
-	for part, last in pairs(d.parts) do
-		if part.Parent then
-			local cf = part.CFrame
-			if (cf.Position - last.Position).Magnitude > 1e-3 or (cf.LookVector - last.LookVector).Magnitude > 1e-3 then
-				d.parts[part] = cf
-				if not d.reported[part] then
-					d.reported[part] = true
-					if not d.anyMoved then
-						d.anyMoved = true
-						d.anyMovedAt = d.time
-					end
-					self:_log("Se movió la pieza:", part:GetFullName())
-				end
-			end
-		end
-	end
-
-	if rootMoved then
-		d.rootReported = true
-		self:_log("El hueso raíz '" .. self.rootBone.Name .. "' sigue el movimiento: la cinta reaccionará.")
-	elseif d.anyMoved and d.time - d.anyMovedAt > 1 and not d.noMoveNoted then
-		d.noMoveNoted = true
-		self:_warn("Se mueven piezas del modelo pero el hueso raíz NO. Mueve el MODELO COMPLETO o la pieza que contiene los huesos (" .. (self.rootBone.Parent and self.rootBone.Parent:GetFullName() or "?") .. ").")
-	end
-end
-
-function RibbonPhysics:_checkConflicts()
-	for i = 2, self.n do
-		local a, b = self.chain[i].Transform, self.lastT[i]
-		if (a.Position - b.Position).Magnitude > 1e-3 or (a.LookVector - b.LookVector).Magnitude > 1e-3 then
-			if not self.conflictWarned then
-				self.conflictWarned = true
-				self:_warn("Otro script/animación está modificando Bone.Transform de '" .. self.chain[i].Name .. "'. Desactiva el script antiguo para evitar temblores.")
-			end
-			return
-		end
-	end
-end
-
-function RibbonPhysics:_debugDraw()
-	if not self.cfg.DebugDraw then
-		return
-	end
-	if not self.dbg then
-		local folder = Instance.new("Folder")
-		folder.Name = "RibbonPhysicsDebug"
-		folder.Parent = Workspace
-		local parts = {}
-		for i = 1, self.n do
-			local p = Instance.new("Part")
-			p.Shape = Enum.PartType.Ball
-			p.Size = Vector3.one * 0.15
-			p.Anchored = true
-			p.CanCollide = false
-			p.CanQuery = false
-			p.CanTouch = false
-			p.Material = Enum.Material.Neon
-			p.Color = (i <= self.startIdx) and Color3.new(1, 0, 0) or Color3.new(0, 1, 1)
-			p.Parent = folder
-			parts[i] = p
-		end
-		local boxParts = {}
-		for bi, b in ipairs(self.boxes) do
-			local bp = Instance.new("Part")
-			bp.Name = "Box_" .. b.name
-			bp.Anchored = true
-			bp.CanCollide = false
-			bp.CanQuery = false
-			bp.CanTouch = false
-			bp.Size = b.half * 2
-			bp.Transparency = 0.75
-			bp.Color = Color3.new(1, 0.3, 0.3)
-			bp.Material = Enum.Material.SmoothPlastic
-			bp.Parent = folder
-			boxParts[bi] = bp
-		end
-		self.dbg = { folder = folder, parts = parts, boxes = boxParts }
-	end
-	for i = 1, self.n do
-		self.dbg.parts[i].Position = self.pos[i]
-	end
-	for bi, bp in ipairs(self.dbg.boxes) do
-		bp.CFrame = self.boxes[bi].cf
-	end
-end
-
---------------------------------------------------------------------------------
--- BUCLE PRINCIPAL
+-- ACTUALIZACIÓN POR FRAME
 --------------------------------------------------------------------------------
 function RibbonPhysics:_update(frameDt)
 	if self.destroyed then
@@ -852,27 +767,8 @@ function RibbonPhysics:_update(frameDt)
 	self.time += dt
 	self.frameCount += 1
 
-	if (cur.Position - self.frame.Position).Magnitude < 1e-5 then
-		self.stalls = (self.stalls or 0) + 1
-	end
-
 	if (cur.Position - self.frame.Position).Magnitude > sim.TeleportDistance then
 		self:_reset(cur)
-		for _, b in ipairs(self.boxes) do
-			b.cf = b.part.CFrame
-		end
-	end
-
-	if self.cfg.Debug then
-		self:_diagnose(dt, cur)
-	end
-	if self.frameCount % 30 == 0 and not self.conflictWarned then
-		self:_checkConflicts()
-	end
-
-	for _, b in ipairs(self.boxes) do
-		b.prev = b.cf
-		b.cf = b.part.CFrame
 	end
 
 	self:_updateWind(cur)
@@ -884,9 +780,6 @@ function RibbonPhysics:_update(frameDt)
 	local lastS = self.sframe
 	for s = 1, steps do
 		local a = s / steps
-		for _, b in ipairs(self.boxes) do
-			b.cur = b.prev:Lerp(b.cf, a)
-		end
 		local real = prev:Lerp(cur, a)
 		local sf = real
 		if tau > 0 then
@@ -901,26 +794,6 @@ function RibbonPhysics:_update(frameDt)
 		self:_groundPass(dt)
 	end
 
-	-- Posición de reposo actual (para estadísticas y ResponseGain)
-	local needGoal = self.cfg.DebugStats or self.cfg.Bones.ResponseGain ~= 1
-	if needGoal then
-		for i = 1, self.n do
-			self.goal[i] = cur:PointToWorldSpace(self.restLocal[i])
-		end
-	end
-
-	if self.cfg.DebugStats and self.frameCount % 60 == 0 then
-		local maxDev, maxI = 0, self.startIdx + 1
-		for i = self.startIdx + 1, self.n do
-			local dev = (self.pos[i] - self.goal[i]).Magnitude
-			if dev > maxDev then
-				maxDev, maxI = dev, i
-			end
-		end
-		print(string.format("[RibbonPhysics] desvío máx. %.2f studs (partícula %d) | frame %.1f ms | raíz sin moverse en %d de 60 frames", maxDev, maxI, dt * 1000, self.stalls or 0))
-		self.stalls = 0
-	end
-
 	for i = 1, self.n do
 		local p = self.pos[i]
 		if p ~= p then
@@ -932,7 +805,6 @@ function RibbonPhysics:_update(frameDt)
 
 	self.frame = cur
 	self:_apply(cur, dt)
-	self:_debugDraw()
 end
 
 function RibbonPhysics:Destroy()
@@ -950,10 +822,6 @@ function RibbonPhysics:Destroy()
 				bone.Transform = self.base[i]
 			end
 		end
-	end
-	if self.dbg then
-		self.dbg.folder:Destroy()
-		self.dbg = nil
 	end
 end
 
