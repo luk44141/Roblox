@@ -15,6 +15,7 @@
 -- [v2] Puntos marcados con [R] (habilidad R = ataque "Heavy": cooldown real de 20 s, combos), [CD] (cooldowns que
 -- sobreviven al respawn y se publican como atributos del Player) y [DEF] (atributo CombatDefense para la velocidad).
 
+local PhysicsService = game:GetService("PhysicsService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -131,6 +132,24 @@ local feedbackRemote = getOrCreateRemote(CombatConfig.Remotes.Feedback)
 
 local function fireFeedback(payload)
 	feedbackRemote:FireAllClients(payload)
+end
+
+-- [v2.11] Durante el combo aéreo los dos personajes NO chocan entre sí (grupo "AirCombo"): sin eso, al subir juntos se
+-- empujaban, el atacante retrocedía y el agarre arrastraba a los dos. Siguen chocando con el mapa.
+local AIR_COLLISION_GROUP = "AirCombo"
+pcall(function()
+	PhysicsService:RegisterCollisionGroup(AIR_COLLISION_GROUP)
+end)
+pcall(function()
+	PhysicsService:CollisionGroupSetCollidable(AIR_COLLISION_GROUP, AIR_COLLISION_GROUP, false)
+end)
+
+local function setAirCollision(character: Model, enabled: boolean)
+	for _, descendant in character:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.CollisionGroup = if enabled then AIR_COLLISION_GROUP else "Default"
+		end
+	end
 end
 
 -- [v2.7] Efectos de movimiento sobre el OBJETIVO (Knockback / Launch / LaunchEnd / Slam / Grab / GrabEnd): un jugador los
@@ -268,6 +287,8 @@ local function playAnimation(state: CombatState, animName: string)
 			return
 		end
 		loaded.Priority = Enum.AnimationPriority.Action
+		-- [v2.12] Si la animación se publicó con "Looped", se repetía en bucle al apretar M1: se fuerza a reproducirse una vez.
+		loaded.Looped = false
 		state.tracks[animName] = loaded
 		track = loaded
 	end
@@ -573,6 +594,7 @@ local function releaseAir(state: CombatState)
 		endAirCombo(participant)
 		clearAirLock(participant)
 		setHover(participant, false)
+		setAirCollision(participant.character, false)
 	end
 end
 
@@ -625,6 +647,16 @@ local function applySlamStun(state: CombatState, now: number)
 			if not landed and t - now > 0.12 and isGrounded(state.character) then
 				landed = true
 				state.slamStunUntil = t + cfg.SlamStun
+				-- [v2.11] Indicador de STUN visible sobre el que aterrizó (también en dummies)
+				fireFeedback({
+					Kind = "Stun",
+					Target = state.character,
+					Duration = cfg.SlamStun,
+					EndTime = workspace:GetServerTimeNow() + cfg.SlamStun,
+				})
+				if CombatConfig.Debug.PrintResults then
+					print(string.format("[Combat] SLAM STUN: %s aterrizó, aturdido %.1fs (dash lo corta)", state.character.Name, cfg.SlamStun))
+				end
 			end
 			if t >= state.slamStunUntil then
 				clearSlamStun(state)
@@ -690,6 +722,8 @@ local function startAirCombo(attackerState: CombatState, targetState: CombatStat
 		})
 	end
 
+	setAirCollision(attackerState.character, true)
+	setAirCollision(targetState.character, true)
 	setHover(attackerState, true)
 	setHover(targetState, true)
 
@@ -730,6 +764,7 @@ local function startGrab(attackerState: CombatState, victimState: CombatState, n
 	attackerState.grabToken += 1
 	local token = attackerState.grabToken
 
+	sendEffect(attackerState, { Kind = "Freeze" }) -- [v2.11] el atacante queda totalmente quieto (también en horizontal)
 	sendEffect(victimState, {
 		Kind = "Grab",
 		Holder = attackerState.character,
@@ -1253,6 +1288,7 @@ function runAttack(state: CombatState, attackName: string, def, token: number)
 	if COMBO_INDEX_OF[attackName] and state.ownerKind == "Player" then
 		state.character:SetAttribute("CombatDashCancel", true)
 	end
+
 	task.wait(def.Recovery)
 	if not stillValid(state, token) then
 		return
@@ -1459,6 +1495,12 @@ end
 --   * En reposo o en la ventana de combo se ejecuta al instante (y no reinicia el combo: ver beginAttack).
 --   * Durante Active/Recovery de un M1 se recuerda BufferTime y se ejecuta al terminar la recuperación.
 --   * El cooldown de 20 s empieza cuando R realmente arranca, y lo valida siempre StartAttack.
+-- [v2.12] ¿Terminó de atacar? (lo usa el combo automático de los dummies)
+function CombatService.IsIdle(character: Model): boolean
+	local state = states[character]
+	return state == nil or state.action == "Idle"
+end
+
 function CombatService.RequestHeavy(character: Model): boolean
 	local state = states[character]
 	if not state or state.ownerKind ~= "Player" or not isAlive(state) then

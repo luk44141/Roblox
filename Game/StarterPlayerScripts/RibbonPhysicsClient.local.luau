@@ -207,4 +207,4 @@ player.CharacterAdded:Connect(function(character)
 			sim:Reset()
 		end
 	end
-end)s
+end)

@@ -42,9 +42,9 @@ CombatConfig.Hurtbox = {
 
 -- IDs de animación. Dejalos vacíos hasta tenerlos: si un ID está vacío, no se reproduce nada.
 -- Formato: "rbxassetid://123456789". Deben ser animaciones R6 publicadas por vos o tu grupo.
-CombatConfig.Animations = {
-	M1_1 = "",   -- PENDIENTE
-	M1_2 = "",   -- PENDIENTE
+local ANIMATION_DEFAULTS = {
+	M1_1 = "rbxassetid://90839212634698",
+	M1_2 = "rbxassetid://96792142603053",
 	M1_3 = "",   -- PENDIENTE
 	M1_4 = "",   -- PENDIENTE
 	-- [v2.3] El combo ahora es de 4 golpes: M1_4 es el golpe final (el que empuja lejos).
@@ -53,10 +53,29 @@ CombatConfig.Animations = {
 	CounterM1 = "", -- PENDIENTE (M1 de contraataque tras bloquear el AirSlam)
 	RunAttack = "", -- PENDIENTE (ataque corriendo)
 	AirGrab = "",   -- PENDIENTE (agarre en el aire de 2 s)
-	DummyM1 = "",-- PENDIENTE (puede repetir el de M1_1)
+	DummyM1 = "rbxassetid://90839212634698", -- repite el de M1_1
 	Heavy = "",  -- PENDIENTE
 	Stun = "",   -- PENDIENTE
 }
+
+-- [v2.12] Los IDs de animación viven en el ModuleScript "CombatAnimations" (mismo folder que este módulo). Así, al
+-- reemplazar CombatConfig por una versión nueva NO se pisan tus IDs. Un ID vacío en CombatAnimations no pisa el default.
+CombatConfig.Animations = ANIMATION_DEFAULTS
+do
+	local overridesModule = script.Parent:FindFirstChild("CombatAnimations")
+	if overridesModule and overridesModule:IsA("ModuleScript") then
+		local ok, overrides = pcall(require, overridesModule)
+		if ok and typeof(overrides) == "table" then
+			for name, id in overrides do
+				if typeof(id) == "string" and id ~= "" then
+					CombatConfig.Animations[name] = id
+				end
+			end
+		else
+			warn("[CombatConfig] CombatAnimations no se pudo cargar: " .. tostring(overrides))
+		end
+	end
+end
 
 -- Ataques. Tiempos en segundos.
 --   Windup: anticipación | Active: ventana de impacto (caja fija) | Recovery: recuperación
@@ -335,7 +354,7 @@ CombatConfig.Uppercut = {
 	-- empuja al rival AirPush studs hacia atrás (AirPushTime segundos).
 	AirPush = 5,
 	AirPushTime = 0.2,
-	BreakIdle = 0.9,
+	BreakIdle = 1.6, -- [v2.11] antes 0.9: el atacante necesitaba más tiempo para el primer golpe aéreo
 	-- [v2.8] Los M1 del combo aéreo (y el AirSlam) tienen la anticipación multiplicada: menos veloces, más fáciles de leer.
 	AirWindupScale = 1.4,
 	SlamSpeed = 110,
@@ -504,9 +523,12 @@ CombatConfig.Dummies = {
 	-- Vuelve solo a su lugar 3 s después del último efecto. Crear el modelo "ComboDummy" en Workspace.CombatDummies
 	-- (duplicando InfiniteHealthDummy, rig R6).
 	ComboDummy = { Role = "Training", InfiniteHealth = true, Movable = true },
+	-- [v2.12] BasicAttackerDummy hace el COMBO de 4 M1 (M1_1..M1_4, con tus animaciones y tiempos) y descansa Interval
+	-- segundos: sirve para aprender a parrear el combo (con un parry exitoso cortás la cadena). Para volver al golpe
+	-- suelto de siempre: AutoAttack = { Attack = "DummyM1", Interval = 2.5 }.
 	BasicAttackerDummy = {
 		Role = "BasicAttacker",
-		AutoAttack = { Attack = "DummyM1", Interval = 2.5 },
+		AutoAttack = { Combo = { "M1_1", "M1_2", "M1_3", "M1_4" }, Interval = 3 },
 	},
 	GuardBreakDummy = {
 		Role = "GuardBreak",

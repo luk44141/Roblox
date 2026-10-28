@@ -92,7 +92,22 @@ local function startAutoAttack(dummy: Model, autoAttack)
 	task.spawn(function()
 		task.wait(autoAttack.Interval)
 		while dummy.Parent do
-			CombatService.StartAttack(dummy, autoAttack.Attack)
+			if autoAttack.Combo then
+				-- [v2.12] Combo: cada golpe empieza apenas termina el anterior. Si algo lo corta (parry, stun), se
+				-- interrumpe la cadena y espera el próximo ciclo.
+				for _, attackName in ipairs(autoAttack.Combo) do
+					if not CombatService.StartAttack(dummy, attackName) then
+						break
+					end
+					local waited = 0
+					repeat
+						task.wait(0.03)
+						waited += 0.03
+					until CombatService.IsIdle(dummy) or waited > 3 or not dummy.Parent
+				end
+			else
+				CombatService.StartAttack(dummy, autoAttack.Attack)
+			end
 			task.wait(autoAttack.Interval)
 		end
 	end)

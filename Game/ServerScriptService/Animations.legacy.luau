@@ -21,6 +21,14 @@ local animations = {
 		rigName = "ForwardRig",
 		animationId = "83572833970924",
 	},
+	{
+		rigName = "m1Rig",
+		animationId = "90839212634698",
+	},
+	{
+		rigName = "m1Rig2",
+		animationId = "96792142603053",
+	},
 }
 
 for _, data in ipairs(animations) do
