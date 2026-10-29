@@ -15,10 +15,12 @@ local DashConfig = {
 	-- [CAMBIO] Distance 8 -> 13 (más alcance) y Duration 0.25 -> 0.28 (la velocidad pico sube poco: ~93 studs/s).
 	-- [CAMBIO] RecoveryTime 0.15 -> 0.06: es el tiempo tras el dash en que no se puede atacar ni bloquear
 	-- (el servidor lo usa en DodgeService.IsBusy). La invulnerabilidad y el Perfect Dodge NO cambian.
-	Duration = 0.28,
-	Distance = 13,
+	-- [v2.16] Distance 13 -> 18 y Duration 0.28 -> 0.32 (velocidad pico ~112 studs/s). RecoveryTime 0.06 -> 0.03: tras el dash
+	-- se puede atacar casi enseguida (dash + M1).
+	Duration = 0.32,
+	Distance = 18,
 	Cooldown = 2, -- Desde el INICIO del dash [v2.4: antes 0.65]
-	RecoveryTime = 0.06,
+	RecoveryTime = 0.03,
 	-- [v2.9] Ventanas más generosas: el dodge normal ocupa casi todo el dash (antes 0.12 s) y el Perfect Dodge pasa de
 	-- 0.08 a 0.11 s. El dodge normal efectivo es InvulnerabilityDuration + Server.InvulnerabilityPadding (tope: Duration).
 	InvulnerabilityDuration = 0.22, -- Desde el inicio del dash

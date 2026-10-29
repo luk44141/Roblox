@@ -236,12 +236,17 @@ end
 -- Fin del dash
 ----------------------------------------------------------------------
 
-local function isCharacterValid()
+-- [v2.16] ignoreStates: con el stun de estampado (CombatDashable) el Humanoid puede quedar en FallingDown / Ragdoll tras el
+-- golpe; en ese caso el dash TIENE que poder hacerse igual (y justamente es lo que corta el stun).
+local function isCharacterValid(ignoreStates: boolean?)
 	if not humanoid or not root or not root.Parent or humanoid.Parent == nil then
 		return false
 	end
 	if humanoid.Health <= 0 or humanoid.Sit then
 		return false
+	end
+	if ignoreStates then
+		return true
 	end
 	return not INVALID_STATES[humanoid:GetState()]
 end
@@ -308,8 +313,16 @@ local function tryStart()
 	if state ~= "Idle" or not humanoid or not root then
 		return
 	end
-	if not isCharacterValid() then
+	local dashableStun = humanoid.Parent ~= nil and humanoid.Parent:GetAttribute("CombatDashable") == true
+	if not isCharacterValid(dashableStun) then
 		return
+	end
+	if dashableStun then
+		-- Sacar al Humanoid de FallingDown / Ragdoll para que el dash se mueva con normalidad
+		local humanoidState = humanoid:GetState()
+		if humanoidState == Enum.HumanoidStateType.FallingDown or humanoidState == Enum.HumanoidStateType.Ragdoll then
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
 	end
 	if cfg.BlockInUIMode and deps.isGameMode and not deps.isGameMode() then
 		return

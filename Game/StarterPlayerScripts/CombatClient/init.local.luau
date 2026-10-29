@@ -213,7 +213,8 @@ table.insert(
 		end
 
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			if not DashController.IsBusy() then
+			-- [v2.16] El clic también se envía durante el dash: el servidor lo recuerda y lo ejecuta apenas termina el dash.
+			do
 				-- [v2.3] Corriendo hacia adelante (W + sprint, sin acción en curso) = ataque corriendo; el servidor lo
 				-- valida con la velocidad real y, si no cumple, lo trata como M1. Con Espacio mantenido, el 4º golpe es Uppercut.
 				local character = player.Character

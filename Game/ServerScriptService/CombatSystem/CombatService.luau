@@ -72,6 +72,7 @@ type CombatState = {
 	m1Held: boolean,                -- [COMBO] el cliente mantiene el clic: el combo de 4 M1 se encadena solo
 	feintReadyAt: number,           -- [FINTA] cooldown de la finta
 	activeStartedAt: number,        -- [FINTA] cuándo empezó la fase de impacto del ataque actual
+	dashBufferedM1At: number?,      -- [DASH] M1 pedido durante el dash
 	blockMeter: number,             -- [BLOQUEO] barra de bloqueo (solo jugadores)
 	blockRegenAt: number,
 	blockExhaustedUntil: number,
@@ -531,8 +532,10 @@ local function applyHitReaction(attackerState: CombatState, targetState: CombatS
 	end)
 
 	-- Empuje: en la dirección a la que mira el atacante (plano horizontal). Lo ejecuta el cliente del objetivo.
+	-- [v2.17] Los dummies atacantes NO empujan: están quietos y, si empujaran, los siguientes golpes de su combo fallarían
+	-- (el jugador quedaría fuera de su alcance) y parecería que solo hacen el primer M1.
 	local attackerRoot = attackerState.character:FindFirstChild("HumanoidRootPart")
-	if distance > 0 and attackerRoot and attackerRoot:IsA("BasePart") then
+	if distance > 0 and attackerState.ownerKind == "Player" and attackerRoot and attackerRoot:IsA("BasePart") then
 		local look = attackerRoot.CFrame.LookVector
 		local flat = Vector3.new(look.X, 0, look.Z)
 		if flat.Magnitude > 1e-3 then
@@ -993,7 +996,16 @@ local function resolveHit(attackerState: CombatState, targetState: CombatState, 
 		if attackerInAir and attackerState.ownerKind == "Player" then
 			duration = CombatConfig.Uppercut.ParriedStun -- el rival tiene tiempo de empezar combo
 		end
-		applyStun(attackerState, duration)
+		local applied = applyStun(attackerState, duration)
+		if CombatConfig.Debug.PrintResults then
+			print(string.format(
+				"[Combat] PARRY: %s aturdido %.1fs (aplicado=%s)%s",
+				attackerState.character.Name,
+				duration,
+				tostring(applied),
+				if applied then "" else " -> ya estaba aturdido o con inmunidad tras un stun"
+			))
+		end
 	end
 
 	local target = targetState.character
@@ -1400,6 +1412,10 @@ function CombatService.RequestM1(character: Model, upHeld: boolean?): boolean
 		return false
 	end
 	if DodgeService.IsBusy(character) then -- [DASH] No se ataca durante el dash ni su recuperación
+		-- [v2.16] ...pero el M1 queda recordado y sale apenas termina (dash + M1 para seguir el combo): ver el Heartbeat.
+		if state.ownerKind == "Player" then
+			state.dashBufferedM1At = now
+		end
 		return false
 	end
 
@@ -1729,6 +1745,7 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		m1Held = false,
 		feintReadyAt = 0,
 		activeStartedAt = 0,
+		dashBufferedM1At = nil,
 		blockMeter = CombatConfig.Block.Meter.Max,
 		blockRegenAt = 0,
 		blockExhaustedUntil = 0,
@@ -1863,6 +1880,17 @@ RunService.Heartbeat:Connect(function(dt: number)
 	for _, state in states do
 		if state.player and not state.dead then
 			updateBlockMeter(state, now, dt)
+
+			-- [DASH] M1 pedido durante el dash: sale cuando el dash termina (si no pasaron más de 0.6 s).
+			local pendingM1 = state.dashBufferedM1At
+			if pendingM1 then
+				if now - pendingM1 > 0.6 then
+					state.dashBufferedM1At = nil
+				elseif not DodgeService.IsBusy(state.character) then
+					state.dashBufferedM1At = nil
+					CombatService.RequestM1(state.character, state.upHeld)
+				end
+			end
 		end
 	end
 end)

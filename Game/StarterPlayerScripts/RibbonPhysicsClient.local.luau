@@ -44,14 +44,6 @@ local ANIMATION_RIGS_FOLDER = "Animaciones"
 local WEAPON_JOINT_OVERRIDE = nil
 -- Desplazamiento de la espada respecto de esa parte (normalmente nada: la espada y la parte del rig coinciden).
 local SWORD_FROM_PROXY = CFrame.new()
-local STANDARD_JOINTS = {
-	["Neck"] = true, ["RootJoint"] = true, ["Left Shoulder"] = true, ["Right Shoulder"] = true,
-	["Left Hip"] = true, ["Right Hip"] = true, -- R6
-	["Root"] = true, ["Waist"] = true, ["LeftShoulder"] = true, ["RightShoulder"] = true,
-	["LeftElbow"] = true, ["RightElbow"] = true, ["LeftWrist"] = true, ["RightWrist"] = true,
-	["LeftHip"] = true, ["RightHip"] = true, ["LeftKnee"] = true, ["RightKnee"] = true,
-	["LeftAnkle"] = true, ["RightAnkle"] = true, -- R15
-}
 
 local player = Players.LocalPlayer
 
@@ -114,9 +106,19 @@ local CONFIG = {
 --------------------------------------------------------------------------------
 -- EQUIPAR (prueba local): suelda la espada a la mano derecha
 --------------------------------------------------------------------------------
--- Busca en los rigs de animación la Motor6D del arma (cualquier unión que no sea del cuerpo estándar).
+-- Busca en los rigs de animación la unión que sostiene el arma: cualquier Motor6D / Weld / WeldConstraint que una una parte
+-- del cuerpo (Torso, brazos, mano...) con una parte que NO es del cuerpo (el arma). Se prioriza el rig "m1Rig" y las Motor6D.
 local weaponJointTemplate = nil
 local templateSearched = false
+
+local BODY_PARTS = {
+	["Head"] = true, ["Torso"] = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+	["HumanoidRootPart"] = true, -- R6
+	["UpperTorso"] = true, ["LowerTorso"] = true, ["LeftUpperArm"] = true, ["LeftLowerArm"] = true, ["LeftHand"] = true,
+	["RightUpperArm"] = true, ["RightLowerArm"] = true, ["RightHand"] = true, ["LeftUpperLeg"] = true, ["LeftLowerLeg"] = true,
+	["LeftFoot"] = true, ["RightUpperLeg"] = true, ["RightLowerLeg"] = true, ["RightFoot"] = true, -- R15
+}
+local PREFERRED_RIG = "m1Rig"
 
 local function findWeaponJointTemplate()
 	if templateSearched then
@@ -131,6 +133,7 @@ local function findWeaponJointTemplate()
 			Part1Name = WEAPON_JOINT_OVERRIDE.Part1,
 			C0 = WEAPON_JOINT_OVERRIDE.C0 or CFrame.new(),
 			C1 = WEAPON_JOINT_OVERRIDE.C1 or CFrame.new(),
+			SwordFromProxy = CFrame.new(),
 		}
 		return weaponJointTemplate
 	end
@@ -141,30 +144,88 @@ local function findWeaponJointTemplate()
 		return nil
 	end
 
-	local seen = {}
-	for _, descendant in ipairs(folder:GetDescendants()) do
-		if descendant:IsA("Motor6D") and not STANDARD_JOINTS[descendant.Name] and descendant.Part0 and descendant.Part1 then
-			table.insert(seen, string.format("%s (%s -> %s)", descendant.Name, descendant.Part0.Name, descendant.Part1.Name))
-			if not weaponJointTemplate then
-				weaponJointTemplate = {
-					Name = descendant.Name,
-					Part0Name = descendant.Part0.Name,
-					Part1Name = descendant.Part1.Name,
-					C0 = descendant.C0,
-					C1 = descendant.C1,
-				}
+	-- Rigs en orden de prioridad
+	local rigs = {}
+	local preferred = folder:FindFirstChild(PREFERRED_RIG)
+	if preferred then
+		table.insert(rigs, preferred)
+	end
+	for _, child in ipairs(folder:GetChildren()) do
+		if child ~= preferred then
+			table.insert(rigs, child)
+		end
+	end
+
+	local report = {}
+	local function isExtra(part: BasePart?): boolean
+		return part ~= nil and not BODY_PARTS[part.Name]
+	end
+
+	for _, rig in ipairs(rigs) do
+		local extraParts = {}
+		for _, descendant in ipairs(rig:GetDescendants()) do
+			if descendant:IsA("BasePart") and isExtra(descendant) then
+				table.insert(extraParts, descendant.Name)
+			end
+		end
+		table.insert(report, string.format("%s: partes extra = {%s}", rig.Name, table.concat(extraParts, ", ")))
+
+		for _, descendant in ipairs(rig:GetDescendants()) do
+			local part0, part1, c0, c1, kind
+			if descendant:IsA("Motor6D") or descendant:IsA("Weld") then
+				part0, part1, c0, c1 = descendant.Part0, descendant.Part1, descendant.C0, descendant.C1
+				kind = descendant.ClassName
+			elseif descendant:IsA("WeldConstraint") then
+				part0, part1 = descendant.Part0, descendant.Part1
+				if part0 and part1 then
+					c0, c1 = part0.CFrame:ToObjectSpace(part1.CFrame), CFrame.new()
+				end
+				kind = "WeldConstraint"
+			end
+
+			if part0 and part1 and c0 and c1 then
+				-- Se normaliza para que Part0 sea la parte del cuerpo y Part1 el arma
+				if isExtra(part0) and not isExtra(part1) then
+					part0, part1 = part1, part0
+					c0, c1 = c1, c0
+				end
+				if not isExtra(part0) and isExtra(part1) then
+					table.insert(report, string.format("   %s '%s' (%s -> %s)", kind, descendant.Name, part0.Name, part1.Name))
+					local better = weaponJointTemplate == nil
+						or (weaponJointTemplate.Kind ~= "Motor6D" and kind == "Motor6D")
+					if better then
+						-- Si el rig trae una copia de la espada, se alinea nuestra pieza Base con la suya
+						local swordFromProxy = CFrame.new()
+						local rigBase = rig:FindFirstChild(HANDLE_NAME, true)
+						if rigBase and rigBase:IsA("BasePart") and rigBase ~= part1 then
+							swordFromProxy = part1.CFrame:ToObjectSpace(rigBase.CFrame)
+						end
+						weaponJointTemplate = {
+							Name = if kind == "Motor6D" then descendant.Name else "WeaponJoint",
+							Part0Name = part0.Name,
+							Part1Name = part1.Name,
+							C0 = c0,
+							C1 = c1,
+							Kind = kind,
+							SwordFromProxy = swordFromProxy,
+							RigName = rig.Name,
+						}
+					end
+				end
 			end
 		end
 	end
 
 	if weaponJointTemplate then
 		print(string.format(
-			"[RibbonPhysicsClient] Unión del arma copiada del rig: '%s' (%s -> %s). Uniones no estándar halladas: %s",
-			weaponJointTemplate.Name, weaponJointTemplate.Part0Name, weaponJointTemplate.Part1Name, table.concat(seen, "; ")
+			"[RibbonPhysicsClient] Unión del arma copiada del rig '%s': %s '%s' (%s -> %s)\n%s",
+			weaponJointTemplate.RigName, weaponJointTemplate.Kind, weaponJointTemplate.Name,
+			weaponJointTemplate.Part0Name, weaponJointTemplate.Part1Name, table.concat(report, "\n")
 		))
 	else
-		warn("[RibbonPhysicsClient] No encontré ninguna Motor6D de arma en Workspace." .. ANIMATION_RIGS_FOLDER
-			.. ": se usa la soldadura simple. Si tus rigs tienen el arma, rellená WEAPON_JOINT_OVERRIDE.")
+		warn("[RibbonPhysicsClient] No encontré ninguna unión de arma en Workspace." .. ANIMATION_RIGS_FOLDER
+			.. ": se usa la soldadura simple (el arma NO coincidirá con la animación). Esto es lo que hay en los rigs:\n"
+			.. table.concat(report, "\n"))
 	end
 	return weaponJointTemplate
 end
@@ -231,7 +292,8 @@ local function equipSword(sword, character)
 	local proxy, part0, joint = ensureWeaponProxy(character)
 	if proxy and part0 and joint then
 		anchorPart = proxy
-		anchorCFrame = part0.CFrame * joint.C0 * joint.C1:Inverse() * SWORD_FROM_PROXY
+		local fromProxy = if weaponJointTemplate then weaponJointTemplate.SwordFromProxy else CFrame.new()
+		anchorCFrame = part0.CFrame * joint.C0 * joint.C1:Inverse() * fromProxy * SWORD_FROM_PROXY
 	end
 
 	local pivotRel = handle.CFrame:ToObjectSpace(sword:GetPivot())

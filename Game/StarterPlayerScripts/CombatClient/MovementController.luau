@@ -143,6 +143,10 @@ local function updateHover()
 		destroyHover()
 		return
 	end
+	if hover.freeze then
+		hover.velocity.VectorVelocity = Vector3.zero -- [v2.11] quieto en los 3 ejes
+		return
+	end
 	local vy = hover.riseSpeed * (1 - math.min(t / hover.riseTime, 1))
 	hover.velocity.VectorVelocity = Vector3.new(0, vy, 0)
 end
@@ -197,6 +201,8 @@ function MovementController.StartAirHang(riseSpeed: any, riseTime: any, maxTime:
 		root = root,
 		attachment = attachment,
 		velocity = velocity,
+		force = force,
+		freeze = false,
 		riseSpeed = math.clamp(riseSpeed, 0, 120),
 		riseTime = math.max(riseTime, 0.05),
 		startTime = os.clock(),
@@ -206,6 +212,17 @@ end
 
 function MovementController.StopAirHang()
 	destroyHover()
+end
+
+-- [v2.11] Agarre: el que agarra queda totalmente quieto (el flotar pasa a sostener los 3 ejes, no solo la altura).
+function MovementController.FreezeAirHang()
+	if not hover then
+		return
+	end
+	hover.freeze = true
+	hover.velocity.MaxAxesForce = Vector3.new(hover.force, hover.force, hover.force)
+	hover.velocity.VectorVelocity = Vector3.zero
+	hover.root.AssemblyLinearVelocity = Vector3.zero
 end
 
 -- [v2.5] holder: el personaje que agarra; offset: posición del agarrado en el espacio local de holder (adelante = -Z).
@@ -363,6 +380,9 @@ local function step(dt: number)
 		lastHumanoid = humanoid
 		jumpOverridden = false
 		jumpCooldownUntil = 0
+		-- [v2.16] Tras empujes y estampados el Humanoid se "caía" (FallingDown / Ragdoll) y el dash lo rechazaba: se desactivan.
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
 		if stateConnection then
 			stateConnection:Disconnect()
 		end
