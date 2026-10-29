@@ -43,8 +43,8 @@ CombatConfig.Hurtbox = {
 -- IDs de animación. Dejalos vacíos hasta tenerlos: si un ID está vacío, no se reproduce nada.
 -- Formato: "rbxassetid://123456789". Deben ser animaciones R6 publicadas por vos o tu grupo.
 local ANIMATION_DEFAULTS = {
-	M1_1 = "rbxassetid://90839212634698",
-	M1_2 = "rbxassetid://96792142603053",
+	M1_1 = "rbxassetid://123838620024691",
+	M1_2 = "rbxassetid://71856574775605",
 	M1_3 = "",   -- PENDIENTE
 	M1_4 = "",   -- PENDIENTE
 	-- [v2.3] El combo ahora es de 4 golpes: M1_4 es el golpe final (el que empuja lejos).
@@ -53,7 +53,7 @@ local ANIMATION_DEFAULTS = {
 	CounterM1 = "", -- PENDIENTE (M1 de contraataque tras bloquear el AirSlam)
 	RunAttack = "", -- PENDIENTE (ataque corriendo)
 	AirGrab = "",   -- PENDIENTE (agarre en el aire de 2 s)
-	DummyM1 = "rbxassetid://90839212634698", -- repite el de M1_1
+	DummyM1 = "rbxassetid://123838620024691", -- repite el de M1_1
 	Heavy = "",  -- PENDIENTE
 	Stun = "",   -- PENDIENTE
 }
@@ -83,28 +83,36 @@ end
 --   Label: texto del indicador de timing
 --   MovementProfile: perfil de CombatConfig.Movement.Profiles
 --   Finisher: marca el golpe final del combo (número y efecto distintos)
+-- [v2.15] Los M1 siguen tu animación de 60 frames (a ANIMATION_FPS fotogramas por segundo; el editor de Roblox usa 60 por
+-- defecto, si lo cambiaste poné el valor real): frames 0-15 = preparación (Windup), 15-30 = impacto (Active, aquí se
+-- conecta el golpe) y 30-60 = recuperación (Recovery). Si volvés a apretar M1 el siguiente golpe arranca en el frame 30.
+local ANIMATION_FPS = 60
+local function frames(count: number): number
+	return count / ANIMATION_FPS
+end
+
 CombatConfig.Attacks = {
 	M1_1 = {
-		Label = "M1", Damage = 8, Windup = 0.18, Active = 0.12, Recovery = 0.22,
+		Label = "M1", Damage = 8, Windup = frames(15), Active = frames(15), Recovery = frames(30),
 		Box = { Size = Vector3.new(5, 5, 5), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 	},
 	M1_2 = {
-		Label = "M1", Damage = 9, Windup = 0.16, Active = 0.12, Recovery = 0.22,
+		Label = "M1", Damage = 9, Windup = frames(15), Active = frames(15), Recovery = frames(30),
 		Box = { Size = Vector3.new(5.5, 5, 5), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 	},
 	M1_3 = {
-		Label = "M1", Damage = 10, Windup = 0.16, Active = 0.12, Recovery = 0.24,
+		Label = "M1", Damage = 10, Windup = frames(15), Active = frames(15), Recovery = frames(30),
 		Box = { Size = Vector3.new(5.5, 5, 5.5), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
 	},
 	-- [v2.3] Golpe final del combo (antes M1_5): empuja LEJOS y aturde un poco (HitReaction).
 	M1_4 = {
-		Label = "M1", Damage = 18, Windup = 0.28, Active = 0.16, Recovery = 0.35, -- [v2.10] Recovery 0.5 -> 0.35
+		Label = "M1", Damage = 18, Windup = frames(15), Active = frames(15), Recovery = frames(30), -- (cuando tengas su animación, ajustá los frames)
 		Box = { Size = Vector3.new(7, 5.5, 7), Forward = 0.5, VerticalOffset = 0 },
 		CanBeBlocked = true, CanBeParried = true, BreaksGuard = false,
 		MovementProfile = "Light",
@@ -356,7 +364,7 @@ CombatConfig.Uppercut = {
 	AirPushTime = 0.2,
 	BreakIdle = 1.6, -- [v2.11] antes 0.9: el atacante necesitaba más tiempo para el primer golpe aéreo
 	-- [v2.8] Los M1 del combo aéreo (y el AirSlam) tienen la anticipación multiplicada: menos veloces, más fáciles de leer.
-	AirWindupScale = 1.4,
+	AirWindupScale = 1.0, -- [v2.15] los M1 ya son lentos (15 frames de preparación): sin multiplicador extra
 	SlamSpeed = 110,
 	-- [v2.5] El 4º golpe aéreo (AirSlam y su contraataque) manda LEJOS al rival, lo estampa y lo aturde SlamStun segundos,
 	-- salvo que haga dash (el dash corta el stun).
@@ -396,6 +404,10 @@ CombatConfig.RunAttack = {
 CombatConfig.Feint = {
 	Enabled = true,
 	Cooldown = 2.0,
+	-- [v2.15] Más tiempo para fintar: además de la preparación (15 frames = 0.25 s), el golpe del M1 se "compromete" recién
+	-- CommitDelay segundos DESPUÉS de empezar la fase de impacto; hasta entonces el clic derecho todavía lo cancela.
+	-- Ventana total de finta = Windup + CommitDelay (0.35 s con los tiempos actuales).
+	CommitDelay = 0.1,
 }
 
 -- [v2.3] Salto: cooldown (cliente, igual que el resto del movimiento).
@@ -528,7 +540,7 @@ CombatConfig.Dummies = {
 	-- suelto de siempre: AutoAttack = { Attack = "DummyM1", Interval = 2.5 }.
 	BasicAttackerDummy = {
 		Role = "BasicAttacker",
-		AutoAttack = { Combo = { "M1_1", "M1_2", "M1_3", "M1_4" }, Interval = 3 },
+		AutoAttack = { Combo = true, Interval = 3 }, -- [v2.15] Combo = true: usa la misma cadena de M1 que un jugador
 	},
 	GuardBreakDummy = {
 		Role = "GuardBreak",
@@ -559,6 +571,7 @@ CombatConfig.CooldownHUD = {
 		{ Id = "Heavy", Name = "GUARD BREAK" },
 		{ Id = "Parry", Name = "PARRY" },
 		{ Id = "Jump", Name = "SALTO" }, -- [v2.3]
+		{ Id = "Feint", Name = "FINTA" }, -- [v2.15]
 	},
 	-- [v2.8] Contador de golpes: un círculo por M1 del combo en el borde derecho; el último (el 4º básico / Uppercut /
 	-- AirSlam) es más grande. En el combo aéreo usa AirColor. Lo alimenta el servidor (ComboCount / ComboAir /

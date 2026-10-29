@@ -176,7 +176,7 @@ MovementController.Start({ getPhase = getCombatPhase })
 -- [v2] HUD de cooldowns: lee el estado real publicado por el servidor (atributos del Player). Para el dash también usa
 -- la predicción local (DashController) y muestra el valor más restrictivo: lo que de verdad te dejaría hacer el cliente.
 CooldownHUD.Start({
-	keys = { Dash = DashConfig.Key, Heavy = KEY_HEAVY, Parry = KEY_BLOCK, Jump = Enum.KeyCode.Space },
+	keys = { Dash = DashConfig.Key, Heavy = KEY_HEAVY, Parry = KEY_BLOCK, Jump = Enum.KeyCode.Space, Feint = "M2" },
 	getDashCooldownRemaining = DashController.GetCooldownRemaining,
 	getJumpCooldownRemaining = MovementController.GetJumpCooldownRemaining,
 })
@@ -341,6 +341,8 @@ table.insert(
 		elseif kind == "Launch" then
 			-- [v2.4] Uppercut: los dos suben y quedan flotando hasta LaunchEnd
 			MovementController.StartAirHang(payload.VelocityY, payload.RiseTime, payload.MaxTime)
+		elseif kind == "Freeze" then
+			MovementController.FreezeAirHang() -- [v2.11] el agarre deja quieto al que agarra
 		elseif kind == "LaunchEnd" then
 			MovementController.StopAirHang()
 			assistUntil = 0 -- termina la ayuda continua del combo aéreo

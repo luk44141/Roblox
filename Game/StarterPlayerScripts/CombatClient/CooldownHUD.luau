@@ -110,6 +110,11 @@ local providers = {
 		return remainingFromAttribute("CooldownEnd_Parry", now), CombatConfig.Block.ParryCooldown, nil
 	end,
 
+	-- [v2.15] Finta: cooldown del servidor (CombatService.RequestFeint)
+	Feint = function(now: number): (number, number, number?)
+		return remainingFromAttribute("CooldownEnd_Feint", now), CombatConfig.Feint.Cooldown, nil
+	end,
+
 	-- [v2.3] El cooldown del salto es local (cliente), no hay atributo del servidor.
 	Jump = function(_now: number): (number, number, number?)
 		local remaining = if deps and deps.getJumpCooldownRemaining then deps.getJumpCooldownRemaining() else 0
@@ -454,7 +459,7 @@ function CooldownHUD.Start(newDeps: any)
 	for index, def in ipairs(cfg.Slots) do
 		if providers[def.Id] then
 			local keyCode = deps and deps.keys and deps.keys[def.Id]
-			local keyName = if typeof(keyCode) == "EnumItem" then keyCode.Name else "?"
+			local keyName = if typeof(keyCode) == "EnumItem" then keyCode.Name elseif typeof(keyCode) == "string" then keyCode else "?"
 			local slot = createSlot(index, def, keyName, container)
 			slots[def.Id] = slot
 			table.insert(slotList, slot)

@@ -71,6 +71,7 @@ type CombatState = {
 	grabToken: number,
 	m1Held: boolean,                -- [COMBO] el cliente mantiene el clic: el combo de 4 M1 se encadena solo
 	feintReadyAt: number,           -- [FINTA] cooldown de la finta
+	activeStartedAt: number,        -- [FINTA] cuándo empezó la fase de impacto del ataque actual
 	blockMeter: number,             -- [BLOQUEO] barra de bloqueo (solo jugadores)
 	blockRegenAt: number,
 	blockExhaustedUntil: number,
@@ -504,7 +505,8 @@ local function applyHitReaction(attackerState: CombatState, targetState: CombatS
 		knockTime = reaction.KnockbackTime or knockTime
 	elseif comboIndex and comboIndex < #COMBO_SEQUENCE then
 		local nextDef = CombatConfig.Attacks[COMBO_SEQUENCE[comboIndex + 1]]
-		duration = attackDef.Active + attackDef.Recovery + nextDef.Windup + cfg.StunSlack
+		-- [v2.15] El siguiente golpe llega, encadenado, Active + Windup siguiente después de este impacto.
+		duration = attackDef.Active + nextDef.Windup + cfg.StunSlack
 		parryChance = true
 		distance = cfg.Knockback.Distance
 	else
@@ -1244,6 +1246,20 @@ function runAttack(state: CombatState, attackName: string, def, token: number)
 	state.telegraphing = false
 	state.action = "Active"
 	setMovePhase(state, "Active", def.MovementProfile)
+	state.activeStartedAt = os.clock()
+
+	-- [v2.15] El golpe de un M1 de jugador se compromete CommitDelay segundos después de empezar el impacto: hasta entonces
+	-- se puede fintar (clic derecho). La caja se calcula recién al comprometerse.
+	local commitDelay = 0
+	if COMBO_INDEX_OF[attackName] and state.ownerKind == "Player" then
+		commitDelay = math.min(CombatConfig.Feint.CommitDelay, def.Active)
+	end
+	if commitDelay > 0 then
+		task.wait(commitDelay)
+		if not stillValid(state, token) then
+			return
+		end
+	end
 
 	local cframe, size = HitboxService.GetAttackBoxData(state.character, def.Box)
 	if not cframe or not size then
@@ -1252,7 +1268,7 @@ function runAttack(state: CombatState, attackName: string, def, token: number)
 		return
 	end
 
-	HitboxService.ShowAttackBox(cframe, size, def.Active)
+	HitboxService.ShowAttackBox(cframe, size, def.Active - commitDelay)
 
 	local alreadyHit: { [Model]: boolean } = {}
 	local startTime = os.clock()
@@ -1267,7 +1283,7 @@ function runAttack(state: CombatState, attackName: string, def, token: number)
 			end
 		end
 		RunService.Heartbeat:Wait()
-	until os.clock() - startTime >= def.Active or not stillValid(state, token)
+	until os.clock() - startTime >= def.Active - commitDelay or not stillValid(state, token)
 
 	if not stillValid(state, token) then
 		return
@@ -1289,7 +1305,19 @@ function runAttack(state: CombatState, attackName: string, def, token: number)
 		state.character:SetAttribute("CombatDashCancel", true)
 	end
 
-	task.wait(def.Recovery)
+	-- [v2.15] Si ya apretaste M1 de nuevo (o lo mantenés), el siguiente golpe arranca YA: la animación siguiente entra en el
+	-- frame 30 de la anterior (fin del impacto), sin esperar la recuperación. No aplica al golpe final. Los dummies lo
+	-- usan igual (CombatService.SetChainHeld) para hacer el combo seguido.
+	local comboIndex = COMBO_INDEX_OF[attackName]
+	local chained = comboIndex ~= nil
+		and comboIndex < #COMBO_SEQUENCE
+		and (
+			state.m1Held
+			or (state.bufferedM1At ~= nil and os.clock() - state.bufferedM1At <= CombatConfig.Combo.BufferTime)
+		)
+	if not chained then
+		task.wait(def.Recovery)
+	end
 	if not stillValid(state, token) then
 		return
 	end
@@ -1405,11 +1433,20 @@ function CombatService.RequestFeint(character: Model): boolean
 	local now = os.clock()
 	local current = state.currentAttack
 	local index = if current then COMBO_INDEX_OF[current] else nil
-	if state.action ~= "Windup" or not index or now < state.feintReadyAt then
+	if not index or now < state.feintReadyAt then
+		return false
+	end
+	-- [v2.15] Durante la preparación, o en el primer tramo del impacto (mientras el golpe todavía no se comprometió).
+	local inWindup = state.action == "Windup"
+	local inCommitDelay = state.action == "Active" and now - state.activeStartedAt < cfg.CommitDelay
+	if not inWindup and not inCommitDelay then
 		return false
 	end
 
 	state.feintReadyAt = now + cfg.Cooldown
+	if state.player then
+		publishCooldown(state.player, "Feint", state.feintReadyAt) -- [CD] el HUD muestra el cooldown de la finta
+	end
 	cancelAttack(state) -- corta la animación y el golpe (el token invalida runAttack)
 	setMovePhase(state, "None")
 
@@ -1496,6 +1533,23 @@ end
 --   * Durante Active/Recovery de un M1 se recuerda BufferTime y se ejecuta al terminar la recuperación.
 --   * El cooldown de 20 s empieza cuando R realmente arranca, y lo valida siempre StartAttack.
 -- [v2.12] ¿Terminó de atacar? (lo usa el combo automático de los dummies)
+-- [v2.15] Combo automático de los dummies: mantiene "apretado" el M1 mientras dura la cadena.
+function CombatService.SetChainHeld(character: Model, held: boolean)
+	local state = states[character]
+	if state then
+		state.m1Held = held
+	end
+end
+
+-- ¿Sigue en curso un ataque o un combo (dentro de su ventana)?
+function CombatService.IsComboActive(character: Model): boolean
+	local state = states[character]
+	if not state then
+		return false
+	end
+	return state.action ~= "Idle" or (state.comboIndex > 0 and os.clock() <= state.comboWindowUntil)
+end
+
 function CombatService.IsIdle(character: Model): boolean
 	local state = states[character]
 	return state == nil or state.action == "Idle"
@@ -1628,6 +1682,7 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 			publishCooldown(player, key, readyAt)
 		end
 		player:SetAttribute("CooldownEnd_Parry", 0) -- el parry sí empieza limpio con cada personaje
+		player:SetAttribute("CooldownEnd_Feint", 0)
 	end
 
 	local state: CombatState = {
@@ -1673,6 +1728,7 @@ function CombatService.Register(character: Model, ownerKind: string, options: Re
 		grabToken = 0,
 		m1Held = false,
 		feintReadyAt = 0,
+		activeStartedAt = 0,
 		blockMeter = CombatConfig.Block.Meter.Max,
 		blockRegenAt = 0,
 		blockExhaustedUntil = 0,

@@ -23,11 +23,11 @@ local animations = {
 	},
 	{
 		rigName = "m1Rig",
-		animationId = "90839212634698",
+		animationId = "123838620024691",
 	},
 	{
 		rigName = "m1Rig2",
-		animationId = "96792142603053",
+		animationId = "71856574775605",
 	},
 }
 
